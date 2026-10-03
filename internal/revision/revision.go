@@ -94,8 +94,9 @@ func readEnvFiles(app types.ServiceConfig, lookup dotenv.LookupFn) (map[string]s
 // value), so secrets are never stored, and drops the revision labels.
 func Strip(app types.ServiceConfig) (types.ServiceConfig, error) {
 	// Only the keys matter: a lookup that always succeeds needs no
-	// interpolation and never warns about unset variables.
-	keys, err := readEnvFiles(app, func(string) (string, bool) { return "", true })
+	// interpolation and never warns about unset variables. The placeholder
+	// is non-empty so ${VAR:?msg} does not fail.
+	keys, err := readEnvFiles(app, func(string) (string, bool) { return "x", true })
 	if err != nil {
 		return app, err
 	}

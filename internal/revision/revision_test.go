@@ -221,3 +221,19 @@ func TestStampNegativeHistoryMax(t *testing.T) {
 		t.Fatalf("history %+v", h)
 	}
 }
+
+func TestStripToleratesRequiredVarSyntax(t *testing.T) {
+	a := app(t, "X=${FOO:?must set}\n")
+	a.Environment["X"] = strp("set")
+	spec, _, err := Encode(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Decode(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.Environment["X"]; ok {
+		t.Fatal("env-file key must not be stored")
+	}
+}
