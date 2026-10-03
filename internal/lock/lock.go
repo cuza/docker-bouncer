@@ -35,7 +35,7 @@ type Locker interface {
 	Remove(ctx context.Context, id string) error
 }
 
-func Acquire(ctx context.Context, l Locker, project, image, owner string, staleAfter time.Duration, force bool, now time.Time) (func(context.Context), error) {
+func Acquire(ctx context.Context, l Locker, project, image, owner string, staleAfter time.Duration, force bool, now time.Time) (func(context.Context) error, error) {
 	name := project + "-bouncer-lock"
 	labels := map[string]string{
 		transform.LabelRole: transform.RoleLock, LabelLockOwner: owner, "com.docker.compose.project": project,
@@ -43,7 +43,7 @@ func Acquire(ctx context.Context, l Locker, project, image, owner string, staleA
 	for attempt := 0; attempt < 2; attempt++ {
 		id, err := l.Create(ctx, name, image, labels)
 		if err == nil {
-			return func(ctx context.Context) { _ = l.Remove(ctx, id) }, nil
+			return func(ctx context.Context) error { return l.Remove(ctx, id) }, nil
 		}
 		if !errors.Is(err, ErrConflict) {
 			return nil, err

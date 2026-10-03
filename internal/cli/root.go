@@ -32,4 +32,6 @@ func NewRoot(dockerCli command.Cli) *cobra.Command {
 }
 
 // addCommands grows as commands land (Tasks 10–11).
-func addCommands(root *cobra.Command, dockerCli command.Cli, pf *ProjectFlags) {}
+func addCommands(root *cobra.Command, dockerCli command.Cli, pf *ProjectFlags) {
+	root.AddCommand(upCmd(dockerCli, pf), pullCmd(dockerCli, pf), stopCmd(dockerCli, pf), downCmd(dockerCli, pf), configCmd(dockerCli, pf))
+}

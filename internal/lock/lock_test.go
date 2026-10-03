@@ -60,7 +60,9 @@ func TestAcquireAndRelease(t *testing.T) {
 	if !errors.As(err, &held) || held.Owner != "alice@host" {
 		t.Fatalf("got %v", err)
 	}
-	rel(context.Background())
+	if err := rel(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := f.ids["proj-bouncer-lock"]; ok {
 		t.Fatal("release must remove the lock")
 	}

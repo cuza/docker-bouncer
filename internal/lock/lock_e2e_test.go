@@ -35,7 +35,9 @@ func TestDockerLock(t *testing.T) {
 	if !errors.As(err, &held) || held.Owner != "alice" || held.Since.IsZero() {
 		t.Fatalf("got %v", err)
 	}
-	rel(ctx)
+	if err := rel(ctx); err != nil {
+		t.Fatal(err)
+	}
 	rel2, err := Acquire(ctx, l, "bouncer-lock-e2e", img, "bob", time.Hour, false, time.Now())
 	if err != nil {
 		t.Fatalf("after release: %v", err)
