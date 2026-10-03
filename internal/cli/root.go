@@ -3,8 +3,10 @@ package cli
 import (
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 
+	"github.com/cuza/docker-bouncer/internal/config"
 	"github.com/docker/cli/cli-plugins/plugin"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"
@@ -65,13 +67,36 @@ func addCommands(root *cobra.Command, dockerCli command.Cli, pf *ProjectFlags) {
 }
 
 func versionCmd() *cobra.Command {
-	return &cobra.Command{
+	var short bool
+	cmd := &cobra.Command{
 		Use:   "version",
-		Short: "Show the docker bouncer version",
+		Short: "Show the docker bouncer version and what it is built on",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := cmd.OutOrStdout().Write([]byte("docker bouncer " + Version + "\n"))
+			out := "docker bouncer " + Version + "\n"
+			if short {
+				out = Version + "\n"
+			} else {
+				out += "  compose: " + moduleVersion("github.com/docker/compose/v5") + "\n"
+				out += "  envoy:   " + config.DefaultProxyImage + " (default proxy image)\n"
+			}
+			_, err := cmd.OutOrStdout().Write([]byte(out))
 			return err
 		},
 	}
+	cmd.Flags().BoolVar(&short, "short", false, "Print only the version number")
+	return cmd
+}
+
+// moduleVersion reads a dependency's version from the build info the Go
+// toolchain embeds in the binary.
+func moduleVersion(path string) string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, d := range bi.Deps {
+			if d.Path == path {
+				return d.Version
+			}
+		}
+	}
+	return "unknown"
 }

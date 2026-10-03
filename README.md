@@ -95,7 +95,7 @@ prefixes `plain` lines with an RFC 3339 UTC time.
 | `config` | The derived project |
 | `stop [SERVICE…] [-t N]` | Stop containers; no drain |
 | `down` | Remove the project and its revision history |
-| `version` (or `--version`) | Show the docker bouncer version |
+| `version [--short]` (or `--version`) | Show the version, plus the Compose library and default Envoy image it is built on |
 
 ## Documentation
 
