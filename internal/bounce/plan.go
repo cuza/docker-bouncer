@@ -21,12 +21,14 @@ type Observed struct {
 }
 
 // State is everything Plan needs: N is deploy.replicas, Desired the spec hash
-// new replicas carry.
+// new replicas carry. RunStart is when the current run began (zero = no bound);
+// the health deadline never ends before RunStart + bounce_health_timeout.
 type State struct {
 	N        int
 	Spec     config.Spec
 	Desired  string
 	Now      time.Time
+	RunStart time.Time
 	Replicas []Observed
 }
 
@@ -121,6 +123,9 @@ func Plan(s State) Step {
 		start := r.Started
 		if start.IsZero() {
 			start = r.Created
+		}
+		if s.RunStart.After(start) { // every run gives a full window
+			start = s.RunStart
 		}
 		if !s.healthy(r) && r.HealthySince.IsZero() && s.Now.Sub(start) > s.Spec.HealthTimeout {
 			return Step{Kind: Fail, Replica: &r, Reason: "not healthy within bounce_health_timeout"}

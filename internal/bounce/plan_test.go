@@ -235,3 +235,17 @@ func TestFlappingOldIsKeptWhileNewWarms(t *testing.T) {
 		t.Fatalf("draining a leaves zero serving: %+v", s)
 	}
 }
+
+func TestDeadlineCountsFromRunStart(t *testing.T) {
+	b := rep("b", "new", false) // Envoy-unhealthy, e.g. proxy just restarted
+	b.Created, b.Started = t0.Add(-2*time.Hour), t0.Add(-2*time.Hour)
+	st := state(config.MethodCrossover, 1, b)
+	st.RunStart = t0.Add(-10 * time.Second)
+	if s := Plan(st); s.Kind != Wait {
+		t.Fatalf("got %+v", s)
+	}
+	st.RunStart = t0.Add(-301 * time.Second)
+	if s := Plan(st); s.Kind != Fail || s.Replica.Name != "b" {
+		t.Fatalf("got %+v", s)
+	}
+}
