@@ -27,6 +27,49 @@ docker bouncer --help
 
 From source: `go build -o ~/.docker/cli-plugins/docker-bouncer .`
 
+## How it works
+
+```mermaid
+flowchart LR
+  c["other containers<br/>api:8080"] --> p
+  h["host<br/>127.0.0.1:8080"] --> p
+  subgraph proj["Compose project proj"]
+    p["api (proxy)<br/>Envoy; owns the service name, ports and aliases"]
+    p -- "cluster file lists hostnames" --> r1["proj-api-app-1"]
+    p --> r2["proj-api-app-N"]
+    l["proj-bouncer-lock<br/>created, never started"]
+  end
+  b["docker bouncer"] -- "docker exec: rewrite list, read health" --> p
+  b -. "while a run is active" .-> l
+```
+
+A crossover bounce of `api` with one replica:
+
+```mermaid
+sequenceDiagram
+  participant B as docker bouncer
+  participant C as Compose
+  participant E as Envoy (proxy)
+  participant Old as old replica
+  participant New as new replica
+  B->>C: scale api-app to 2 (Recreate=never)
+  C->>New: create and start
+  B->>E: add New to the cluster file
+  E->>New: health check passes for min_task_uptime
+  B->>E: remove Old from the cluster file
+  loop until 0 connections or delay
+    B->>E: read /proc/net/tcp
+  end
+  B->>Old: docker stop and rm
+```
+
+There is no state store: every run reads the compose file, container labels
+and Envoy's live view. Each revision of a Service lives in its replicas'
+labels (gzip and base64, like Helm's release secrets), which is where
+`history` and `undo` read it. After a host reboot Docker restarts the
+containers and Envoy re-resolves the replica hostnames within a second, so no
+Bouncer run is needed, provided the replicas have a `restart:` policy.
+
 ## Configuration
 
 A service becomes a Bouncer Service by having an `x-bouncer` block. Replica
