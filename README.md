@@ -77,8 +77,14 @@ services:
 Durations use Go syntax (`95s`, `5m`). A Docker `healthcheck` is optional;
 when present a replica must pass it too, and Envoy's check always gates.
 Long-syntax ports may set `app_protocol`, but only `http` is accepted. A
-Bouncer Service needs `ports:` or `expose:` and cannot set `container_name`.
-Configuration errors exit 2 before anything changes.
+Bouncer Service needs `ports:` or `expose:` and cannot set `container_name`,
+`mac_address`, or a network's `ipv4_address`, `ipv6_address` or
+`mac_address` (the proxy and every replica would share it). Unknown
+`x-bouncer` keys are rejected. Configuration errors exit 2 before anything
+changes.
+
+Give Bouncer Services `restart: unless-stopped` (or `always`) so replicas come
+back after a host reboot without a Bouncer run; the proxy already has it.
 
 ### What gets derived
 
@@ -164,7 +170,7 @@ Global flags as Compose: `-f/--file`, `-p/--project-name`,
 
 | Command | Behaviour |
 |---|---|
-| `up [SERVICE…] [--pull always\|missing\|never] [--force-unlock]` | Pull, converge plain services, bounce Services in parallel. Always detached. |
+| `up [SERVICE…] [--pull always\|missing\|never] [--force-unlock]` | Pull, converge plain services, bounce Services in parallel; with SERVICE names, only those and their dependencies. Always detached. |
 | `pull [SERVICE…]` | Pull images and the proxy image; change nothing. |
 | `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision (default: the previous one), creating a new revision. Without a Service: every Service changed by the last `up`. |
 | `history SERVICE` | Revision, time, image, up-id. |
@@ -180,10 +186,12 @@ Global flags as Compose: `-f/--file`, `-p/--project-name`,
 - Single host. No scheduling, autoscaling or multi-host.
 - HTTP only; TCP Services are not supported.
 - A change to the proxy's own definition (Envoy image, ports) recreates it
-  after the replicas converge, which interrupts the Service briefly; `up`
-  warns first.
+  before the bounce starts, which interrupts the Service briefly; `up` warns
+  first.
 - Plain `docker compose up` on the same project is unsupported: it would
-  recreate `S` as the app and fight the proxy for its ports.
+  recreate `S` as the app and fight the proxy for its ports. The next
+  `docker bouncer up` recreates `S` as the proxy, briefly interrupting it;
+  the replicas are untouched.
 - `docker bouncer config` output is not loadable by plain `docker compose`
   (the proxy entrypoint holds variables Compose would interpolate).
 - A change to `deploy.replicas` alone scales `S-app` without a bounce.
