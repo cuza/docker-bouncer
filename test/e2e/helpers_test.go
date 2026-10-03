@@ -153,12 +153,12 @@ func (p *proj) containers(labels ...string) []string {
 
 // replicas returns the IDs of the Service's replica containers.
 func (p *proj) replicas(svc string) []string {
-	return p.containers("com.docker.compose.project="+p.name, "bouncer.role=replica", "bouncer.service="+svc)
+	return p.containers("com.docker.compose.project="+p.name, "dev.cuza.bouncer.role=replica", "dev.cuza.bouncer.service="+svc)
 }
 
 func (p *proj) proxy(svc string) string {
 	p.t.Helper()
-	ids := p.containers("com.docker.compose.project="+p.name, "bouncer.role=proxy", "bouncer.service="+svc)
+	ids := p.containers("com.docker.compose.project="+p.name, "dev.cuza.bouncer.role=proxy", "dev.cuza.bouncer.service="+svc)
 	if len(ids) != 1 {
 		p.t.Fatalf("%s: %d proxy containers", svc, len(ids))
 	}

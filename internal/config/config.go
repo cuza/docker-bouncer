@@ -118,7 +118,7 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 	s := Spec{
 		BounceMethod: MethodCrossover, MarginFactor: 0.95, OverprovisionFactor: 1.0,
 		MinTaskUptime: 10 * time.Second, HealthTimeout: 300 * time.Second, HealthPath: "/",
-		DrainMethod: DrainEnvoy, DrainDelay: 60 * time.Second, HistoryMax: 3, ProxyImage: DefaultProxyImage,
+		DrainMethod: DrainEnvoy, DrainDelay: 60 * time.Second, HistoryMax: 100, ProxyImage: DefaultProxyImage,
 	}
 	dur := func(name string, v *string, into *time.Duration) {
 		if v == nil {
@@ -179,8 +179,8 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 	if r.HistoryMax != nil {
 		s.HistoryMax = *r.HistoryMax
 	}
-	if s.HistoryMax < 0 {
-		bad("history_max must be >= 0")
+	if s.HistoryMax < 0 || s.HistoryMax > 1000 {
+		bad("history_max must be 0..1000")
 	}
 	if r.ProxyImage != nil {
 		s.ProxyImage = *r.ProxyImage

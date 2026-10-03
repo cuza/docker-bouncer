@@ -1,5 +1,7 @@
 // Package revision stores a Service's config and history on its replicas'
-// labels (gzip + base64 JSON), like Helm stores releases in Secrets.
+// labels (gzip + base64 JSON), like Helm stores releases in Secrets. The
+// history label is one gzip of every past entry's raw spec JSON, so
+// near-identical consecutive specs compress against each other.
 //
 // Every key defined in a service's env_file is stripped from the stored
 // environment, and Restore reads the files again, so an undo picks up the
@@ -24,16 +26,21 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/cuza/docker-bouncer/internal/transform"
 	"github.com/docker/cli/pkg/kvfile"
 )
 
 const (
-	LabelRevision = "bouncer.revision"
-	LabelSpec     = "bouncer.spec"
-	LabelSpecHash = "bouncer.spec-hash"
-	LabelHistory  = "bouncer.history"
-	LabelUpID     = "bouncer.up-id"
-	LabelTime     = "bouncer.time"
+	LabelRevision = transform.LabelPrefix + "revision"
+	LabelSpec     = transform.LabelPrefix + "spec"
+	LabelSpecHash = transform.LabelPrefix + "spec-hash"
+	LabelHistory  = transform.LabelPrefix + "history"
+	LabelUpID     = transform.LabelPrefix + "up-id"
+	LabelTime     = transform.LabelPrefix + "time"
+
+	// HistoryBudget caps the encoded history label; the oldest entries
+	// are dropped to fit.
+	HistoryBudget = 64 << 10
 )
 
 var revisionLabel = map[string]bool{LabelRevision: true, LabelSpec: true, LabelSpecHash: true,
@@ -56,10 +63,10 @@ func init() {
 }
 
 type Entry struct {
-	Revision int       `json:"revision"`
-	Time     time.Time `json:"time"`
-	UpID     string    `json:"up_id"`
-	Spec     string    `json:"spec"`
+	Revision int             `json:"revision"`
+	Time     time.Time       `json:"time"`
+	UpID     string          `json:"up_id"`
+	Spec     json.RawMessage `json:"spec"` // the stored JSON, see Encode
 }
 
 // stored is what a spec label holds. EnvFile.Required does not survive
@@ -186,11 +193,12 @@ func unpack(s string, into any) error {
 	return json.Unmarshal(j, into)
 }
 
-// Encode packs the stripped config; the hash is deterministic.
-func Encode(app types.ServiceConfig) (spec, hash string, err error) {
+// Encode returns the stripped config as JSON (what Decode reads) and its
+// deterministic hash.
+func Encode(app types.ServiceConfig) (spec json.RawMessage, hash string, err error) {
 	s, err := Strip(app)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	st := stored{Service: s}
 	for _, f := range s.EnvFiles {
@@ -198,16 +206,15 @@ func Encode(app types.ServiceConfig) (spec, hash string, err error) {
 	}
 	j, err := json.Marshal(st)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	sum := sha256.Sum256(j)
-	spec, err = pack(st)
-	return spec, hex.EncodeToString(sum[:8]), err
+	return j, hex.EncodeToString(sum[:8]), nil
 }
 
-func Decode(spec string) (types.ServiceConfig, error) {
+func Decode(spec json.RawMessage) (types.ServiceConfig, error) {
 	var st stored
-	if err := unpack(spec, &st); err != nil {
+	if err := json.Unmarshal(spec, &st); err != nil {
 		return types.ServiceConfig{}, err
 	}
 	for i := range st.Service.EnvFiles {
@@ -217,11 +224,17 @@ func Decode(spec string) (types.ServiceConfig, error) {
 }
 
 // Stamp returns app with all revision labels. current is the labels of a
-// running replica of the current revision (nil if none).
-func Stamp(app types.ServiceConfig, current map[string]string, upID string, historyMax int, now time.Time) (types.ServiceConfig, error) {
-	spec, hash, err := Encode(app)
+// running replica of the current revision (nil if none). trimmedTo is the
+// number of revisions kept (current included) when HistoryBudget dropped
+// older ones, else 0.
+func Stamp(app types.ServiceConfig, current map[string]string, upID string, historyMax int, now time.Time) (_ types.ServiceConfig, trimmedTo int, err error) {
+	j, hash, err := Encode(app)
 	if err != nil {
-		return app, err
+		return app, 0, err
+	}
+	spec, err := pack(j)
+	if err != nil {
+		return app, 0, err
 	}
 	rev := 1
 	var history []Entry
@@ -230,7 +243,7 @@ func Stamp(app types.ServiceConfig, current map[string]string, upID string, hist
 		rev = prev + 1
 		all, err := History(current)
 		if err != nil {
-			return app, err
+			return app, 0, err
 		}
 		history = all
 	}
@@ -238,8 +251,15 @@ func Stamp(app types.ServiceConfig, current map[string]string, upID string, hist
 		history = history[:max(historyMax, 0)]
 	}
 	h, err := pack(history)
+	// ponytail: proportional cut, then one entry at a time; may drop a few
+	// more than strictly needed when compression is very uneven.
+	for n := len(history); err == nil && len(h) > HistoryBudget && n > 0; {
+		n = min(n-1, n*HistoryBudget/len(h))
+		h, err = pack(history[:n])
+		trimmedTo = n + 1
+	}
 	if err != nil {
-		return app, err
+		return app, 0, err
 	}
 	out := app
 	out.Labels = types.Labels{}
@@ -252,7 +272,7 @@ func Stamp(app types.ServiceConfig, current map[string]string, upID string, hist
 	out.Labels[LabelHistory] = h
 	out.Labels[LabelUpID] = upID
 	out.Labels[LabelTime] = now.UTC().Format(time.RFC3339)
-	return out, nil
+	return out, trimmedTo, nil
 }
 
 // History returns the current revision first, then the stored history.
@@ -262,7 +282,10 @@ func History(labels map[string]string) ([]Entry, error) {
 		return nil, fmt.Errorf("no revision label: %w", err)
 	}
 	t, _ := time.Parse(time.RFC3339, labels[LabelTime])
-	out := []Entry{{Revision: rev, Time: t, UpID: labels[LabelUpID], Spec: labels[LabelSpec]}}
+	out := []Entry{{Revision: rev, Time: t, UpID: labels[LabelUpID]}}
+	if err := unpack(labels[LabelSpec], &out[0].Spec); err != nil {
+		return nil, err
+	}
 	var past []Entry
 	if labels[LabelHistory] != "" {
 		if err := unpack(labels[LabelHistory], &past); err != nil {

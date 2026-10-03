@@ -14,10 +14,12 @@ import (
 )
 
 const (
-	LabelManaged   = "bouncer.managed"
-	LabelRole      = "bouncer.role"
-	LabelService   = "bouncer.service"
-	LabelAdminPort = "bouncer.admin-port"
+	// LabelPrefix starts every label bouncer sets (reverse DNS, like com.docker.compose.*).
+	LabelPrefix    = "dev.cuza.bouncer."
+	LabelManaged   = LabelPrefix + "managed"
+	LabelRole      = LabelPrefix + "role"
+	LabelService   = LabelPrefix + "service"
+	LabelAdminPort = LabelPrefix + "admin-port"
 
 	RoleProxy   = "proxy"
 	RoleReplica = "replica"

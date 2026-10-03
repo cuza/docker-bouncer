@@ -17,7 +17,8 @@ proxy in front of each service and health-gated bounces, as a Docker CLI plugin.
   methods: `crossover`, `upthendown`, `downthenup`, `brutal`.
 - **No control plane, no state store.** Every run reads the compose file,
   container labels and Envoy's live view. Revisions live in the replicas'
-  labels, so `history` and `undo` work without a database.
+  `dev.cuza.bouncer.*` labels (the last 100 by default, in one compressed
+  label), so `history` and `undo` work without a database.
 
 ## Install
 

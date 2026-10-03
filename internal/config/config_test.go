@@ -33,7 +33,7 @@ func TestDefaults(t *testing.T) {
 	want := Spec{
 		BounceMethod: MethodCrossover, MarginFactor: 0.95, OverprovisionFactor: 1.0,
 		MinTaskUptime: 10 * time.Second, HealthTimeout: 300 * time.Second, HealthPath: "/",
-		DrainMethod: DrainEnvoy, DrainDelay: 60 * time.Second, HistoryMax: 3, ProxyImage: DefaultProxyImage,
+		DrainMethod: DrainEnvoy, DrainDelay: 60 * time.Second, HistoryMax: 100, ProxyImage: DefaultProxyImage,
 	}
 	if got.Spec.BounceMethod != want.BounceMethod || got.Spec.MarginFactor != want.MarginFactor ||
 		got.Spec.OverprovisionFactor != want.OverprovisionFactor || got.Spec.MinTaskUptime != want.MinTaskUptime ||
@@ -159,6 +159,14 @@ func TestStaticAddressesAreRejected(t *testing.T) {
 	for _, want := range []string{"\nmac_address cannot", "front: ipv4_address", "front: ipv6_address", "front: mac_address"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing problem %q in %v", want, got)
+		}
+	}
+}
+
+func TestHistoryMaxBounds(t *testing.T) {
+	for _, n := range []int{-1, 1001} {
+		if _, err := Parse(svc(map[string]any{"history_max": n}, nil, "8080")); err == nil || !strings.Contains(err.Error(), "history_max") {
+			t.Errorf("history_max %d: got %v", n, err)
 		}
 	}
 }

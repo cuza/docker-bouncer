@@ -13,7 +13,7 @@ import (
 	"github.com/moby/moby/client"
 )
 
-const LabelLockOwner = "bouncer.lock-owner"
+const LabelLockOwner = transform.LabelPrefix + "lock-owner"
 
 var ErrConflict = errors.New("name in use")
 

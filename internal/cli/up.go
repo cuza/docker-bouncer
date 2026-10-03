@@ -210,13 +210,21 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 	app.Labels = maps.Clone(app.Labels) // never write into the shared derived project
 	if cur != nil && cur[revision.LabelSpecHash] == hash {
 		for k, v := range cur {
-			if strings.HasPrefix(k, "bouncer.") {
+			if strings.HasPrefix(k, transform.LabelPrefix) {
 				app.Labels[k] = v
 			}
 		}
 		return app, nil
 	}
-	return revision.Stamp(app, cur, upID, svc.Spec.HistoryMax, time.Now())
+	app, kept, err := revision.Stamp(app, cur, upID, svc.Spec.HistoryMax, time.Now())
+	warnTrimmed(l, svc, kept)
+	return app, err
+}
+
+func warnTrimmed(l *loaded, svc config.Service, kept int) {
+	if kept > 0 {
+		l.event("Service "+svc.Name, api.Warning, "History trimmed:", fmt.Sprintf("to %d revisions (%d KiB label budget)", kept, revision.HistoryBudget>>10))
+	}
 }
 
 func upService(ctx context.Context, l *loaded, svc config.Service, app types.ServiceConfig) error {

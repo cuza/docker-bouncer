@@ -18,7 +18,7 @@ type Replica struct {
 }
 
 type Engine interface {
-	Replicas(ctx context.Context, project, service string) ([]Replica, error)                  // role=replica, bouncer.service=service, all states
+	Replicas(ctx context.Context, project, service string) ([]Replica, error)                  // role=replica, service=service, all states
 	Container(ctx context.Context, project string, labels map[string]string) (*Replica, error) // first match or nil
 	Stop(ctx context.Context, id string) error                                                 // container's own stop timeout
 	Remove(ctx context.Context, id string) error

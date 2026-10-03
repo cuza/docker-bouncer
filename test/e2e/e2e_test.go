@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -316,7 +318,7 @@ func TestReplicaChangeScalesWithoutBounce(t *testing.T) {
 		}
 	}
 	for _, id := range now {
-		if rev := docker(t, "inspect", "-f", `{{index .Config.Labels "bouncer.revision"}}`, id); rev != "1" {
+		if rev := docker(t, "inspect", "-f", `{{index .Config.Labels "dev.cuza.bouncer.revision"}}`, id); rev != "1" {
 			t.Fatalf("replica %s has revision %s, want 1", id, rev)
 		}
 	}
@@ -459,7 +461,7 @@ func TestInterruptReleasesLock(t *testing.T) {
 	if out, code := b.wait(t, 15*time.Second); code == 0 {
 		t.Fatalf("interrupted up exited 0:\n%s", out)
 	}
-	if ids := p.containers("bouncer.role=lock", "com.docker.compose.project="+p.name); len(ids) != 0 {
+	if ids := p.containers("dev.cuza.bouncer.role=lock", "com.docker.compose.project="+p.name); len(ids) != 0 {
 		t.Fatalf("lock container left behind: %v", ids)
 	}
 	if out, code := p.bouncer("up"); code != 0 {
@@ -669,24 +671,40 @@ func TestDownThenUp(t *testing.T) {
 	}
 }
 
+// TestLargeLabels: each revision carries ~27 KiB of incompressible spec, so
+// the default history_max (100) gives way to the 64 KiB history budget.
 func TestLargeLabels(t *testing.T) {
 	port := freePort(t)
-	big := strings.Repeat("x", 10*1024)
-	p := project(t, fmt.Sprintf(`
+	big := func() string {
+		b := make([]byte, 20*1024)
+		rand.Read(b)
+		return hex.EncodeToString(b)
+	}
+	yaml := func(v string) string {
+		return fmt.Sprintf(`
 services:
   api:
     image: bouncer-e2e-app:v1
-    environment: { BIG: %s, BOUNCE: "0" }
+    environment: { BIG: %s }
     ports: ["127.0.0.1:%d:8080"]
-    x-bouncer: { %s, history_max: 3, drain_method_params: { delay: 1s } }
-`, big, port, fast))
-	p.mustUp()
-	for i := 1; i <= 4; i++ {
-		p.write(strings.Replace(p.yaml, fmt.Sprintf(`BOUNCE: "%d"`, i-1), fmt.Sprintf(`BOUNCE: "%d"`, i), 1))
-		p.mustUp()
+    x-bouncer: { %s, drain_method_params: { delay: 1s } }
+`, v, port, fast)
 	}
-	if h := p.history("api"); len(h) != 4 || !strings.HasPrefix(h[0], "5 *") {
-		t.Fatalf("history (current + 3): %q", h)
+	p := project(t, yaml(big()))
+	p.mustUp()
+	var out string
+	for range 3 {
+		p.write(yaml(big()))
+		var code int
+		if out, code = p.bouncer("up"); code != 0 {
+			t.Fatalf("up: exit %d\n%s", code, out)
+		}
+	}
+	if !strings.Contains(out, "History trimmed") {
+		t.Fatalf("no trim warning:\n%s", out)
+	}
+	if h := p.history("api"); len(h) != 3 || !strings.HasPrefix(h[0], "4 *") {
+		t.Fatalf("history (current + 2 that fit): %q", h)
 	}
 	docker(t, "inspect", p.replicas("api")[0])
 	out, code := p.bouncer("ls")

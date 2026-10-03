@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"time"
@@ -100,11 +101,12 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 					if err != nil {
 						return types.ServiceConfig{}, err
 					}
-					if t, err := undoTarget(h, to); err != nil || t.Spec != p.target.Spec {
+					if t, err := undoTarget(h, to); err != nil || !bytes.Equal(t.Spec, p.target.Spec) {
 						return types.ServiceConfig{}, fmt.Errorf("%s: revisions changed while undo started; run it again", svc.Name)
 					}
-					app, err := revision.Stamp(p.app, cur, upID, svc.Spec.HistoryMax, time.Now())
+					app, kept, err := revision.Stamp(p.app, cur, upID, svc.Spec.HistoryMax, time.Now())
 					if err == nil {
+						warnTrimmed(l, svc, kept)
 						l.event("Service "+svc.Name, api.Warning, fmt.Sprintf("Revision %s = copy of %d:", app.Labels[revision.LabelRevision], p.target.Revision),
 							fmt.Sprintf("the compose file still describes revision %d, the next up rolls forward", p.file))
 					}
@@ -139,7 +141,7 @@ func fileRevision(l *loaded, svc config.Service, h []revision.Entry) int {
 	spec, _, err := revision.Encode(l.Derived.Project.Services[transform.AppName(svc.Name)])
 	if err == nil {
 		for _, e := range h {
-			if e.Spec == spec {
+			if bytes.Equal(e.Spec, spec) {
 				return e.Revision
 			}
 		}
