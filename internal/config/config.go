@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -105,8 +106,12 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 	var r raw
 	if b, err := json.Marshal(ext); err != nil {
 		bad("x-bouncer: %v", err)
-	} else if err := json.Unmarshal(b, &r); err != nil {
-		bad("x-bouncer: %v", err)
+	} else {
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&r); err != nil {
+			bad("x-bouncer: %v", err)
+		}
 	}
 
 	s := Spec{
@@ -181,6 +186,20 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 	}
 	if svc.ContainerName != "" {
 		bad("container_name cannot be set on a bouncer service (it runs several replicas)")
+	}
+	// The proxy and every replica would get the same address.
+	if svc.MacAddress != "" {
+		bad("mac_address cannot be set on a bouncer service (it runs several containers)")
+	}
+	for name, n := range svc.Networks {
+		if n == nil {
+			continue
+		}
+		for _, f := range [][2]string{{"ipv4_address", n.Ipv4Address}, {"ipv6_address", n.Ipv6Address}, {"mac_address", n.MacAddress}} {
+			if f[1] != "" {
+				bad("networks: %s: %s cannot be set on a bouncer service (it runs several containers)", name, f[0])
+			}
+		}
 	}
 
 	ports := parsePorts(svc, bad)

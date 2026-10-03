@@ -136,3 +136,29 @@ func TestHTTPDrainNeedsIsSafeToKill(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestUnknownKeysAreRejected(t *testing.T) {
+	_, err := Parse(svc(map[string]any{"drain_metod": "noop"}, nil, "8080"))
+	if err == nil || !strings.Contains(err.Error(), "drain_metod") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestStaticAddressesAreRejected(t *testing.T) {
+	s := svc(map[string]any{}, nil, "8080")
+	s.MacAddress = "02:42:ac:11:00:02"
+	s.Networks = map[string]*types.ServiceNetworkConfig{
+		"front": {Ipv4Address: "172.20.0.5", Ipv6Address: "fd00::5", MacAddress: "02:42:ac:11:00:03"},
+		"back":  nil,
+	}
+	_, err := Parse(s)
+	if err == nil {
+		t.Fatal("want error")
+	}
+	got := "\n" + strings.Join(err.(*Error).Problems, "\n")
+	for _, want := range []string{"\nmac_address cannot", "front: ipv4_address", "front: ipv6_address", "front: mac_address"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing problem %q in %v", want, got)
+		}
+	}
+}
