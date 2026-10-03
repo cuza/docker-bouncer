@@ -9,15 +9,19 @@ Envoy's live view.
 
 ## Install
 
-From a release (binaries for `linux` and `darwin`, `amd64` and `arm64`):
+From a release. Assets are named `docker-bouncer-<os>-<arch>` for
+`linux` and `darwin`, `amd64` and `arm64`; set `bin` to yours. On macOS use
+`shasum -a 256 -c` instead of `sha256sum -c`.
 
 ```sh
 v=vX.Y.Z; bin=docker-bouncer-linux-arm64
-mkdir -p ~/.docker/cli-plugins && cd ~/.docker/cli-plugins
-curl -fsSLO https://github.com/cuza/docker-bouncer/releases/download/$v/$bin
-curl -fsSLO https://github.com/cuza/docker-bouncer/releases/download/$v/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS
-mv $bin docker-bouncer && chmod +x docker-bouncer && rm SHA256SUMS
+mkdir -p ~/.docker/cli-plugins && (
+  cd ~/.docker/cli-plugins &&
+  curl -fsSLO https://github.com/cuza/docker-bouncer/releases/download/$v/$bin &&
+  curl -fsSLO https://github.com/cuza/docker-bouncer/releases/download/$v/SHA256SUMS &&
+  sha256sum -c --ignore-missing SHA256SUMS &&
+  mv $bin docker-bouncer && chmod +x docker-bouncer && rm SHA256SUMS
+)
 docker bouncer --help
 ```
 
@@ -119,10 +123,10 @@ Envoy reports it healthy, and it has stayed so for `min_task_uptime`.
 
 | `bounce_method` | Behaviour | Kubernetes equivalent |
 |---|---|---|
-| `crossover` | the loop with `surge = ceil(N × overprovision)`, `unavailable = floor(N × (1 − margin))` | RollingUpdate |
+| `crossover` | the loop with `surge = ceil(N × overprovision)`, `unavailable = floor(N × (1 − margin))`; if both are 0, surge becomes 1 so a bounce can always progress | RollingUpdate |
 | `upthendown` | the loop with `surge = N`, `unavailable = 0` | none |
 | `downthenup` | drain and stop all old, then create new; a gap in service | Recreate |
-| `brutal` | create new and stop old immediately, no gates or drain | RollingUpdate, `maxUnavailable = 100%` |
+| `brutal` | create all N new replicas first (up to 2N), then stop old ones immediately: off the list, no health gates, no drain wait (dev only) | RollingUpdate, `maxUnavailable = 100%` |
 
 ### Drain methods
 
