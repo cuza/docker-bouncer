@@ -1,0 +1,24 @@
+name: release
+on:
+  push: { tags: ["v*"] }
+permissions: { contents: write }
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version: "1.26.8" }
+      - run: go test ./...
+      - name: build
+        run: |
+          mkdir dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os=${target%/*}; arch=${target#*/}
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/docker-bouncer-$os-$arch" .
+          done
+          (cd dist && sha256sum docker-bouncer-* > SHA256SUMS)
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env: { GH_TOKEN: "${{ github.token }}" }
