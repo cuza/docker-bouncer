@@ -170,10 +170,11 @@ func (r *Runner) drain(ctx context.Context, st State, o Observed) error {
 	case config.DrainEnvoy:
 		for o.Running && r.Now().Before(deadline) {
 			n, err := r.Proxy.Conns(ctx, o.IPs)
-			if err != nil { // transient: keep waiting until the deadline
-				r.Log("%s: connections of %s: %v", r.Svc.Name, o.Name, err)
-			} else if n == 0 {
+			if err == nil && n == 0 {
 				break
+			}
+			if err != nil && ctx.Err() == nil { // transient: keep waiting until the deadline
+				r.Log("%s: connections of %s: %v", r.Svc.Name, o.Name, err)
 			}
 			r.Engine.Wait(ctx, r.Project, 500*time.Millisecond)
 			if err := ctx.Err(); err != nil {

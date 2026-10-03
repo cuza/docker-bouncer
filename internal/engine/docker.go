@@ -109,7 +109,8 @@ func (d *docker) Wait(ctx context.Context, project string, timeout time.Duration
 		Add("event", "create", "start", "die", "stop", "destroy", "health_status")})
 	select {
 	case <-ev.Messages:
-	case <-ev.Err:
+	case <-ev.Err: // daemon unreachable: sleep out the timeout, callers poll in a loop
+		<-ctx.Done()
 	case <-ctx.Done():
 	}
 }
