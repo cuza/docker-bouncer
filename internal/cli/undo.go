@@ -46,14 +46,19 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			}
 			// Restore before the lock: the targets' images are pulled now, never mid-bounce.
 			type plan struct {
-				app          types.ServiceConfig
-				target, file int
+				app    types.ServiceConfig
+				target revision.Entry
+				file   int
 			}
 			plans := map[string]plan{}
 			pulls := types.Services{}
 			names := servicesOfLastUp(latest)
 			for _, svc := range selected(l.Derived.Services, names) {
 				h := history[svc.Name]
+				if len(args) == 0 && len(h) < 2 {
+					fmt.Fprintf(dockerCli.Err(), "%s: nothing to undo (first revision)\n", svc.Name)
+					continue
+				}
 				target, err := undoTarget(h, to)
 				if err != nil {
 					return Exit(1, fmt.Errorf("%s: %w", svc.Name, err))
@@ -62,15 +67,24 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				if err != nil {
 					return Exit(1, fmt.Errorf("%s: revision %d: %w", svc.Name, target.Revision, err))
 				}
-				plans[svc.Name] = plan{app, target.Revision, fileRevision(l, svc, h)}
+				plans[svc.Name] = plan{app, target, fileRevision(l, svc, h)}
 				pulls[app.Name] = app
+			}
+			if len(plans) == 0 {
+				return Exit(1, fmt.Errorf("nothing to undo"))
 			}
 			if err := prePull(ctx, l, pulls, "", imagePresent(dockerCli)); err != nil {
 				return Exit(2, err)
 			}
 			return withLock(ctx, dockerCli, l, false, func() error {
 				upID := time.Now().UTC().Format("20060102T150405Z")
-				return bounceAll(ctx, dockerCli, l, selected(l.Derived.Services, names), func(svc config.Service) (types.ServiceConfig, error) {
+				var svcs []config.Service
+				for _, svc := range l.Derived.Services {
+					if _, ok := plans[svc.Name]; ok {
+						svcs = append(svcs, svc)
+					}
+				}
+				return bounceAll(ctx, dockerCli, l, svcs, func(svc config.Service) (types.ServiceConfig, error) {
 					cur, err := current(ctx, l, svc.Name) // re-read under the lock
 					if err == nil && cur == nil {
 						err = fmt.Errorf("%s: no running replica with revision labels", svc.Name)
@@ -79,10 +93,18 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 						return types.ServiceConfig{}, err
 					}
 					p := plans[svc.Name]
+					// A concurrent up may have moved history since the target was picked.
+					h, err := revision.History(cur)
+					if err != nil {
+						return types.ServiceConfig{}, err
+					}
+					if t, err := undoTarget(h, to); err != nil || t.Spec != p.target.Spec {
+						return types.ServiceConfig{}, fmt.Errorf("%s: revisions changed while undo started; run it again", svc.Name)
+					}
 					app, err := revision.Stamp(p.app, cur, upID, svc.Spec.HistoryMax, time.Now())
 					if err == nil {
 						fmt.Fprintf(dockerCli.Err(), "%s: revision %s = copy of %d; the compose file still describes revision %d, the next up rolls forward\n",
-							svc.Name, app.Labels[revision.LabelRevision], p.target, p.file)
+							svc.Name, app.Labels[revision.LabelRevision], p.target.Revision, p.file)
 					}
 					return app, err
 				})
