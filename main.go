@@ -11,6 +11,7 @@ import (
 var version = "dev" // -ldflags "-X main.version=…" at release
 
 func main() {
+	cli.Version = version
 	plugin.Run(func(dockerCli command.Cli) *cobra.Command {
 		root := cli.NewRoot(dockerCli)
 		root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return cli.Exit(2, err) })
