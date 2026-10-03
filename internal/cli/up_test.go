@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/cuza/docker-bouncer/internal/engine"
 	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/cuza/docker-bouncer/internal/transform"
+	dockercli "github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
@@ -97,5 +100,46 @@ func TestLoad(t *testing.T) {
 		if got := l.Derived.Project.Services[name].CustomLabels[api.ServiceLabel]; got != name {
 			t.Errorf("%s: compose service label %q", name, got)
 		}
+	}
+}
+
+func TestUpProjectScopesToNamedServices(t *testing.T) {
+	svc := func(name string, bouncer bool, deps ...string) types.ServiceConfig {
+		s := types.ServiceConfig{Name: name}
+		s.Image, s.Expose = "registry/"+name+":1", types.StringOrNumberList{"8080"}
+		if bouncer {
+			s.Extensions = types.Extensions{"x-bouncer": map[string]any{}}
+		}
+		if len(deps) > 0 {
+			s.DependsOn = types.DependsOnConfig{}
+			for _, d := range deps {
+				s.DependsOn[d] = types.ServiceDependency{Condition: "service_started"}
+			}
+		}
+		return s
+	}
+	p := &types.Project{Name: "proj", Services: types.Services{
+		"api": svc("api", true, "db"), "worker": svc("worker", true), "db": svc("db", false),
+	}}
+	d, err := transform.Apply(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &loaded{Project: p, Derived: d, Engine: &fakeEngine{}, mu: &sync.Mutex{}}
+
+	sel, err := upProject(l, []string{"api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := sel.ServiceNames()
+	if !slices.Equal(got, []string{"api", "api-app", "db"}) {
+		t.Fatalf("up api converges %v, want api, api-app and its dependency db", got)
+	}
+	if all, err := upProject(l, nil); err != nil || len(all.Services) != 5 {
+		t.Fatalf("up without args converges everything: %v %v", all.ServiceNames(), err)
+	}
+	var se dockercli.StatusError
+	if _, err := upProject(l, []string{"nope"}); !errors.As(err, &se) || se.StatusCode != 2 {
+		t.Fatalf("unknown service: %v, want exit 2", err)
 	}
 }

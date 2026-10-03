@@ -40,12 +40,16 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			default:
 				return Exit(2, fmt.Errorf(`--pull: %q is not "always", "missing" or "never"`, pull))
 			}
-			if err := prePull(ctx, l, l.Derived.Project.Services, pull, imagePresent(dockerCli)); err != nil {
+			sel, err := upProject(l, args)
+			if err != nil {
+				return err
+			}
+			if err := prePull(ctx, l, sel.Services, pull, imagePresent(dockerCli)); err != nil {
 				return Exit(2, err)
 			}
 			return withLock(ctx, dockerCli, l, forceUnlock, func() error {
 				// 1. Plain services and proxies through Compose (normal convergence).
-				if err := upPlainAndProxies(ctx, dockerCli, l); err != nil {
+				if err := upPlainAndProxies(ctx, dockerCli, l, sel); err != nil {
 					return Exit(1, err)
 				}
 				// 2. Every Service bounces in parallel.
@@ -98,11 +102,29 @@ func bounceAll(ctx context.Context, dockerCli command.Cli, l *loaded, svcs []con
 	return Exit(1, g.Wait())
 }
 
-// upPlainAndProxies converges everything except replicas the normal Compose
-// way. A proxy is only recreated when its own definition changed.
-func upPlainAndProxies(ctx context.Context, dockerCli command.Cli, l *loaded) error {
-	p := noPull(l.Derived.Project.WithServicesDisabled(appNames(l)...))
+// upProject is the part of the derived project `up [SERVICE...]` converges:
+// the named services, their replicas and dependencies; all without args.
+func upProject(l *loaded, args []string) (*types.Project, error) {
+	for _, a := range args {
+		if _, ok := l.Project.Services[a]; !ok {
+			return nil, configErr("%s is not a service", a)
+		}
+	}
+	p, err := l.Derived.Project.WithSelectedServices(expand(l, args))
+	if err != nil {
+		return nil, configErr("%v", err)
+	}
+	return p, nil
+}
+
+// upPlainAndProxies converges sel except replicas the normal Compose way. A
+// proxy is only recreated when its own definition changed.
+func upPlainAndProxies(ctx context.Context, dockerCli command.Cli, l *loaded, sel *types.Project) error {
+	p := noPull(sel.WithServicesDisabled(appNames(l)...))
 	for _, s := range l.Derived.Services {
+		if _, ok := p.Services[s.Name]; !ok {
+			continue
+		}
 		running, err := l.Engine.Container(ctx, p.Name, map[string]string{transform.LabelRole: transform.RoleProxy, transform.LabelService: s.Name})
 		if err != nil || running == nil {
 			continue

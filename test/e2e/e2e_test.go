@@ -572,3 +572,44 @@ services:
 		t.Fatalf("ls: %d\n%s", code, out)
 	}
 }
+
+func TestUpNamedServiceOnly(t *testing.T) {
+	p := project(t, fmt.Sprintf(`
+services:
+  a:
+    image: bouncer-e2e-app:v1
+    expose: ["8080"]
+    x-bouncer: { %[1]s, drain_method_params: { delay: 1s } }
+  b:
+    image: bouncer-e2e-app:v1
+    expose: ["8080"]
+    x-bouncer: { %[1]s, drain_method_params: { delay: 1s } }
+  side:
+    image: alpine:3.22
+    command: ["sleep", "infinity"]
+    environment: { V: "1" }
+    stop_signal: SIGKILL
+`, fast))
+	p.mustUp()
+	before := p.ids()
+	// Every service changes; only a may be converged.
+	p.write(strings.Replace(strings.ReplaceAll(p.yaml, ":v1", ":v2"), `V: "1"`, `V: "2"`, 1))
+	if out, code := p.bouncer("up", "a"); code != 0 {
+		t.Fatalf("up a: %d\n%s", code, out)
+	}
+	if img := p.images("a"); img["bouncer-e2e-app:v2"] != 1 || len(img) != 1 {
+		t.Fatalf("a replicas %v, want v2", img)
+	}
+	after := p.ids()
+	for name, id := range before {
+		if !strings.HasPrefix(name, "/"+p.name+"-a-") && after[name] != id {
+			t.Fatalf("up a touched %s", name)
+		}
+	}
+	if img := p.images("b"); img["bouncer-e2e-app:v1"] != 1 || len(img) != 1 {
+		t.Fatalf("b replicas %v, want untouched v1", img)
+	}
+	if out, code := p.bouncer("up", "nope"); code != 2 {
+		t.Fatalf("up nope: exit %d, want 2\n%s", code, out)
+	}
+}
