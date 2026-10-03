@@ -20,7 +20,8 @@ type world struct {
 	conns      map[string]int
 	connPolls  int
 	newHealthy bool
-	sick       int // the next sick Health calls report every host unhealthy
+	never      map[string]bool // replicas Envoy never reports healthy
+	sick       int             // the next sick Health calls report every host unhealthy
 	desired    string
 	scaled     int
 	stopped    []string
@@ -128,7 +129,7 @@ func (w *world) Health(context.Context) (map[string]bool, error) {
 			continue
 		}
 		isNew := r.Labels[revision.LabelSpecHash] == w.desired
-		out[r.Name] = !sick && r.Running && (!isNew || w.newHealthy)
+		out[r.Name] = !sick && r.Running && (!isNew || w.newHealthy) && !w.never[r.Name]
 	}
 	return out, nil
 }

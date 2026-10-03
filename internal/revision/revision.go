@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -105,6 +106,17 @@ func Strip(app types.ServiceConfig) (types.ServiceConfig, error) {
 	for k, v := range app.Environment {
 		if _, ok := keys[k]; !ok {
 			out.Environment[k] = v
+		}
+	}
+	// The replica count is not part of the spec: changing it alone scales
+	// without a bounce. Copy Deploy; app's is shared.
+	out.Scale = nil
+	if app.Deploy != nil {
+		d := *app.Deploy
+		d.Replicas = nil
+		out.Deploy = &d
+		if reflect.ValueOf(d).IsZero() {
+			out.Deploy = nil
 		}
 	}
 	// Revision labels are bookkeeping, not part of the spec; every other

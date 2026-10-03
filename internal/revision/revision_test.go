@@ -237,3 +237,21 @@ func TestStripToleratesRequiredVarSyntax(t *testing.T) {
 		t.Fatal("env-file key must not be stored")
 	}
 }
+
+func TestReplicaCountIsNotPartOfTheSpec(t *testing.T) {
+	a := app(t, "")
+	_, plain, _ := Encode(a)
+	a.Deploy = &types.DeployConfig{}
+	a.SetScale(2) // `deploy: {replicas: 2}` hashes like no deploy at all
+	_, two, _ := Encode(a)
+	a.Deploy.Resources.Limits = &types.Resource{MemoryBytes: 1 << 20}
+	_, limited, _ := Encode(a)
+	a.SetScale(3)
+	_, three, err := Encode(a)
+	if err != nil || two != plain || three != limited || limited == two {
+		t.Fatalf("plain %s two %s limited %s three %s err %v", plain, two, limited, three, err)
+	}
+	if *a.Deploy.Replicas != 3 {
+		t.Fatal("Encode must not mutate the app's Deploy")
+	}
+}

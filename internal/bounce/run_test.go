@@ -128,6 +128,19 @@ func TestRunFailsAndKeepsOldServing(t *testing.T) {
 	}
 }
 
+func TestRunFailRemovesEveryUnhealthyNewReplica(t *testing.T) {
+	w := newWorld("new", 3) // app-1 healthy; app-2 and app-3 never healthy
+	w.never = map[string]bool{"proj-api-app-2": true, "proj-api-app-3": true}
+	w.reps[2].Created = t0.Add(time.Hour) // app-3 is far from its own deadline
+	r := w.runner(config.MethodCrossover, 3, "new")
+	if err := r.Run(context.Background()); !errors.Is(err, ErrFailed) {
+		t.Fatalf("got %v", err)
+	}
+	if len(w.reps) != 1 || w.reps[0].Name != "proj-api-app-1" || !w.listed("proj-api-app-1") {
+		t.Fatalf("only the healthy new replica stays, listed: %v %v", w.reps, w.list)
+	}
+}
+
 func TestRunNoopWhenConverged(t *testing.T) {
 	w := newWorld("new", 1)
 	r := w.runner(config.MethodCrossover, 1, "new")

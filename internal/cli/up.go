@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +35,12 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := prePull(ctx, dockerCli, l, pull); err != nil {
+			switch pull {
+			case "", types.PullPolicyAlways, types.PullPolicyMissing, types.PullPolicyNever:
+			default:
+				return Exit(2, fmt.Errorf(`--pull: %q is not "always", "missing" or "never"`, pull))
+			}
+			if err := prePull(ctx, l, pull, imagePresent(dockerCli)); err != nil {
 				return Exit(2, err)
 			}
 			name := l.Derived.Project.Name
@@ -60,7 +64,7 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			var g errgroup.Group
 			for _, svc := range selected(l.Derived.Services, args) {
 				g.Go(func() error {
-					if err := startStopped(ctx, l, svc); err != nil {
+					if err := startStopped(ctx, l, svc, logf(dockerCli)); err != nil {
 						return err
 					}
 					app, err := desiredApp(ctx, l, svc, upID)
@@ -82,7 +86,7 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 // upPlainAndProxies converges everything except replicas the normal Compose
 // way. A proxy is only recreated when its own definition changed.
 func upPlainAndProxies(ctx context.Context, dockerCli command.Cli, l *loaded) error {
-	p := l.Derived.Project.WithServicesDisabled(appNames(l)...)
+	p := noPull(l.Derived.Project.WithServicesDisabled(appNames(l)...))
 	for _, s := range l.Derived.Services {
 		running, err := l.Engine.Container(ctx, p.Name, map[string]string{transform.LabelRole: transform.RoleProxy, transform.LabelService: s.Name})
 		if err != nil || running == nil {
@@ -104,7 +108,7 @@ func upPlainAndProxies(ctx context.Context, dockerCli command.Cli, l *loaded) er
 // startStopped starts the Service's stopped replicas (after `stop`, or a host
 // restart) so they count as running: the planner drains old ones and keeps
 // current ones instead of waiting on them until bounce_health_timeout.
-func startStopped(ctx context.Context, l *loaded, svc config.Service) error {
+func startStopped(ctx context.Context, l *loaded, svc config.Service, log func(string, ...any)) error {
 	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc.Name)
 	if err != nil || !slices.ContainsFunc(reps, func(r engine.Replica) bool { return !r.Running }) {
 		return err
@@ -115,7 +119,10 @@ func startStopped(ctx context.Context, l *loaded, svc config.Service) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.Compose.Start(ctx, p.Name, api.StartOptions{Project: p})
+	if err := l.Compose.Start(ctx, p.Name, api.StartOptions{Project: noPull(p)}); err != nil {
+		log("%s: starting stopped replicas: %v (the bounce drains the dead ones)", svc.Name, err)
+	}
+	return nil
 }
 
 // current returns the labels of a running replica of the newest revision.
@@ -190,11 +197,13 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 	}).Run(ctx)
 }
 
-// prePull pulls everything up needs before anything changes. Policy:
-// --pull overrides; else the service's pull_policy (default missing).
-// "daily" is treated as "missing".
-func prePull(ctx context.Context, dockerCli command.Cli, l *loaded, override string) error {
+// prePull is the only pull, done before the lock; Compose gets pull_policy
+// never everywhere else. Policy: --pull overrides; else the service's
+// pull_policy (default missing; "daily" counts as missing). The lock
+// container's image (the proxy image) is pulled when missing too.
+func prePull(ctx context.Context, l *loaded, override string, present func(context.Context, string) bool) error {
 	var names []string
+	images := map[string]bool{}
 	for name, svc := range l.Derived.Project.Services {
 		policy := override
 		if policy == "" {
@@ -204,20 +213,34 @@ func prePull(ctx context.Context, dockerCli command.Cli, l *loaded, override str
 		case types.PullPolicyNever, types.PullPolicyBuild:
 			continue
 		case types.PullPolicyAlways:
-			names = append(names, name)
 		default:
-			if _, err := dockerCli.Client().ImageInspect(ctx, svc.Image); err != nil {
-				names = append(names, name)
+			if images[svc.Image] || present(ctx, svc.Image) {
+				continue
 			}
 		}
+		names = append(names, name)
+		images[svc.Image] = true
 	}
-	if len(names) == 0 {
+	p := &types.Project{Name: l.Derived.Project.Name, WorkingDir: l.Derived.Project.WorkingDir, Services: types.Services{}}
+	for _, n := range names {
+		s := l.Derived.Project.Services[n]
+		s.PullPolicy = types.PullPolicyAlways // Compose skips missing/never services otherwise
+		p.Services[n] = s
+	}
+	if lockImage := proxyImage(l); override != types.PullPolicyNever && !images[lockImage] && !present(ctx, lockImage) {
+		lock := types.ServiceConfig{Name: "bouncer-lock"}
+		lock.Image, lock.PullPolicy = lockImage, types.PullPolicyAlways
+		p.Services[lock.Name] = lock
+	}
+	if len(p.Services) == 0 {
 		return nil
 	}
-	sort.Strings(names)
-	p, err := l.Derived.Project.WithSelectedServices(names, types.IgnoreDependencies)
-	if err != nil {
-		return err
-	}
 	return l.Compose.Pull(ctx, p, api.PullOptions{})
+}
+
+func imagePresent(dockerCli command.Cli) func(context.Context, string) bool {
+	return func(ctx context.Context, image string) bool {
+		_, err := dockerCli.Client().ImageInspect(ctx, image)
+		return err == nil
+	}
 }

@@ -84,8 +84,13 @@ func (c composeScaler) ScaleUp(ctx context.Context, app types.ServiceConfig, tot
 	if err != nil {
 		return err
 	}
+	if app.Deploy != nil { // shared with the derived project; SetScale writes into it
+		d := *app.Deploy
+		app.Deploy = &d
+	}
 	app.SetScale(total)
 	app.CustomLabels = p.Services[app.Name].CustomLabels // a restored spec has none
+	app.PullPolicy = types.PullPolicyNever               // prePull is the only pull
 	p.Services[app.Name] = app
 	c.l.mu.Lock()
 	defer c.l.mu.Unlock()
@@ -93,6 +98,16 @@ func (c composeScaler) ScaleUp(ctx context.Context, app types.ServiceConfig, tot
 		Create: api.CreateOptions{Services: []string{app.Name}, Recreate: api.RecreateNever, RecreateDependencies: api.RecreateNever},
 		Start:  api.StartOptions{Project: p, Services: []string{app.Name}},
 	})
+}
+
+// noPull sets pull_policy never on a project copy handed to Compose: prePull
+// is the only pull, done before the lock.
+func noPull(p *types.Project) *types.Project {
+	for n, s := range p.Services {
+		s.PullPolicy = types.PullPolicyNever
+		p.Services[n] = s
+	}
+	return p
 }
 
 func selected(svcs []config.Service, args []string) []config.Service {

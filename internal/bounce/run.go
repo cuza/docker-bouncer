@@ -105,7 +105,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		case Fail:
 			r.Log("%s: %s: %s", r.Svc.Name, step.Replica.Name, step.Reason)
-			if err := r.remove(ctx, st, *step.Replica); err != nil {
+			if err := r.removeUnhealthyNew(ctx, st); err != nil {
 				return err
 			}
 			return fmt.Errorf("%w: %s: %s %s", ErrFailed, r.Svc.Name, step.Replica.Name, step.Reason)
@@ -224,6 +224,37 @@ func (r *Runner) httpDrain(ctx context.Context, o Observed, deadline time.Time) 
 		}
 	}
 	return fmt.Errorf("not safe to kill after %s", r.Svc.Spec.DrainDelay)
+}
+
+// removeUnhealthyNew removes every new replica that is not healthy, so a
+// failed bounce leaves no half-started version behind; healthy new ones stay.
+func (r *Runner) removeUnhealthyNew(ctx context.Context, st State) error {
+	var bad []Observed
+	listed := false
+	for _, o := range st.Replicas {
+		if o.Hash == st.Desired && !st.healthy(o) {
+			bad = append(bad, o)
+			listed = listed || o.Listed
+		}
+	}
+	if listed {
+		var keep []string
+		for _, o := range st.Replicas {
+			if o.Listed && !slices.ContainsFunc(bad, func(b Observed) bool { return b.Name == o.Name }) {
+				keep = append(keep, o.Name)
+			}
+		}
+		if err := r.setList(ctx, keep); err != nil {
+			return err
+		}
+	}
+	for _, o := range bad {
+		o.Listed = false // already out of the list
+		if err := r.remove(ctx, st, o); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // remove takes the replica out of the list, stops it, then removes it.
