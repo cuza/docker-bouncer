@@ -38,6 +38,9 @@ func TestEnvoyValidatesBootstrapAndClusters(t *testing.T) {
 	for _, c := range doc.Resources {
 		delete(c, "@type")
 	}
-	b, _ := json.Marshal(map[string]any{"static_resources": map[string]any{"clusters": doc.Resources}})
+	b, err := json.Marshal(map[string]any{"static_resources": map[string]any{"clusters": doc.Resources}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	validate(t, dir+":"+ClusterDir+":ro", string(b))
 }

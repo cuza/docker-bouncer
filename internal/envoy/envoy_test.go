@@ -78,3 +78,20 @@ func TestEntrypointSeedsOnlyWhenAbsent(t *testing.T) {
 		t.Fatalf("entrypoint: %s", e)
 	}
 }
+
+func TestOneListenerAndClusterPerTarget(t *testing.T) {
+	svc := service()
+	svc.Ports = []config.Port{{Target: 8080, Published: "8080"}, {Target: 8080, Published: "8081"}}
+	if n := strings.Count(Bootstrap(svc), `"name":"port-8080"`); n != 1 {
+		t.Errorf("want 1 listener for target 8080, got %d", n)
+	}
+	var doc struct {
+		Resources []map[string]any `json:"resources"`
+	}
+	if err := json.Unmarshal([]byte(Clusters(svc, []string{"a"})), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Resources) != 1 {
+		t.Errorf("want 1 cluster for target 8080, got %d", len(doc.Resources))
+	}
+}

@@ -4,6 +4,7 @@ package envoy
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/cuza/docker-bouncer/internal/config"
@@ -26,17 +27,29 @@ func mustJSON(v any) string {
 
 func clusterName(port int) string { return fmt.Sprintf("port-%d", port) }
 
+// targets is the distinct container ports in first-seen order: two published
+// ports may map to one target, which still needs only one listener and cluster.
+func targets(svc config.Service) []int {
+	var out []int
+	for _, p := range svc.Ports {
+		if !slices.Contains(out, p.Target) {
+			out = append(out, p.Target)
+		}
+	}
+	return out
+}
+
 func SeedHost(svc config.Service) string { return svc.Name + "-app" }
 
 // Bootstrap is the proxy's static config. It never contains replica names:
 // it is part of the proxy container's definition and therefore its config hash.
 func Bootstrap(svc config.Service) string {
 	var listeners []any
-	for _, p := range svc.Ports {
-		name := clusterName(p.Target)
+	for _, port := range targets(svc) {
+		name := clusterName(port)
 		listeners = append(listeners, obj{
 			"name":    name,
-			"address": obj{"socket_address": obj{"address": "0.0.0.0", "port_value": p.Target}},
+			"address": obj{"socket_address": obj{"address": "0.0.0.0", "port_value": port}},
 			"filter_chains": []any{obj{"filters": []any{obj{
 				"name": "envoy.filters.network.http_connection_manager",
 				"typed_config": obj{
@@ -86,24 +99,24 @@ func Bootstrap(svc config.Service) string {
 	})
 }
 
-// Clusters is the CDS file: one STRICT_DNS cluster per port, every endpoint
+// Clusters is the CDS file: one STRICT_DNS cluster per target port, every endpoint
 // health-checked on the first port.
 func Clusters(svc config.Service, hostnames []string) string {
 	hosts := append([]string(nil), hostnames...)
 	sort.Strings(hosts)
 	hcPort := svc.Ports[0].Target
 	var resources []any
-	for _, p := range svc.Ports {
+	for _, port := range targets(svc) {
 		var endpoints []any
 		for _, h := range hosts {
 			endpoints = append(endpoints, obj{"endpoint": obj{
-				"address":             obj{"socket_address": obj{"address": h, "port_value": p.Target}},
+				"address":             obj{"socket_address": obj{"address": h, "port_value": port}},
 				"health_check_config": obj{"port_value": hcPort},
 			}})
 		}
 		resources = append(resources, obj{
 			"@type":             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-			"name":              clusterName(p.Target),
+			"name":              clusterName(port),
 			"type":              "STRICT_DNS",
 			"dns_refresh_rate":  "1s",
 			"dns_lookup_family": "V4_ONLY",
@@ -115,7 +128,7 @@ func Clusters(svc config.Service, hostnames []string) string {
 				"http_health_check": obj{"path": svc.Spec.HealthPath},
 			}},
 			"load_assignment": obj{
-				"cluster_name": clusterName(p.Target),
+				"cluster_name": clusterName(port),
 				"endpoints":    []any{obj{"lb_endpoints": endpoints}},
 			},
 		})
