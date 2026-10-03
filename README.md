@@ -78,11 +78,14 @@ runs apart.
 ## Commands
 
 Global flags as Compose: `-f/--file`, `-p/--project-name`,
-`--project-directory`, `--profile`, `--env-file`.
+`--project-directory`, `--profile`, `--env-file`, and
+`--progress auto|tty|plain|json|quiet` (Compose's progress display; `json` is
+one object per line for CI, `quiet` prints errors only). `--timestamps`
+prefixes `plain` lines with an RFC 3339 UTC time.
 
 | Command | Does |
 |---|---|
-| `up [SERVICE…] [--pull …] [--force-unlock]` | Pull, converge plain services, bounce changed Services |
+| `up [SERVICE…] [--pull …] [--force-unlock] [-d] [--wait]` | Pull, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait` accepted for compatibility) |
 | `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision |
 | `history SERVICE` | Stored revisions |
 | `ps` | Containers with role and revision |
@@ -101,7 +104,7 @@ The [wiki](https://github.com/cuza/docker-bouncer/wiki) has the details:
 - [Configuration](https://github.com/cuza/docker-bouncer/wiki/Configuration): every `x-bouncer` key
 - [Bounce methods](https://github.com/cuza/docker-bouncer/wiki/Bounce-methods): animations, surge and margin
 - [Draining and health](https://github.com/cuza/docker-bouncer/wiki/Draining-and-health)
-- [Operations](https://github.com/cuza/docker-bouncer/wiki/Operations): `up`, `undo`, locks, reboots
+- [Operations](https://github.com/cuza/docker-bouncer/wiki/Operations): `up`, `undo`, locks, reboots, output and CI
 - [Troubleshooting](https://github.com/cuza/docker-bouncer/wiki/Troubleshooting): exit codes, known gaps
 - [How it works](https://github.com/cuza/docker-bouncer/wiki/How-it-works): derived services, labels, Envoy
 

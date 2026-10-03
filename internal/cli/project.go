@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,11 +23,16 @@ type loaded struct {
 	Project *types.Project // the user's
 	Derived *transform.Result
 	Engine  engine.Engine
-	mu      *sync.Mutex // one Compose call at a time; bounce loops stay parallel
+	Events  api.EventProcessor // the --progress display
+	mu      *sync.Mutex        // one Compose call at a time; bounce loops stay parallel
 }
 
 func load(ctx context.Context, dockerCli command.Cli, pf *ProjectFlags) (*loaded, error) {
-	c, err := compose.NewComposeService(dockerCli)
+	ev, err := newEvents(dockerCli, pf.Progress, pf.Timestamps)
+	if err != nil {
+		return nil, err
+	}
+	c, err := compose.NewComposeService(dockerCli, compose.WithEventProcessor(inner{ev}))
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +55,8 @@ func load(ctx context.Context, dockerCli command.Cli, pf *ProjectFlags) (*loaded
 		app.CustomLabels = maps.Clone(proxy.CustomLabels).Add(api.ServiceLabel, app.Name)
 		d.Project.Services[proxy.Name], d.Project.Services[app.Name] = proxy, app
 	}
-	return &loaded{Compose: c, Project: p, Derived: d, Engine: engine.NewDocker(dockerCli.Client()), mu: &sync.Mutex{}}, nil
+	setProject(ev, d)
+	return &loaded{Compose: c, Project: p, Derived: d, Engine: engine.NewDocker(dockerCli.Client()), Events: ev, mu: &sync.Mutex{}}, nil
 }
 
 func appNames(l *loaded) []string {
@@ -149,8 +156,13 @@ func proxyImage(l *loaded) string {
 	return config.DefaultProxyImage
 }
 
-func logf(dockerCli command.Cli) func(string, ...any) {
-	return func(format string, a ...any) {
-		fmt.Fprintf(dockerCli.Err(), "%s %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, a...))
-	}
+// show brackets a command's run in the display; call the result when done.
+func (l *loaded) show(ctx context.Context, operation string) func() {
+	l.Events.Start(ctx, operation)
+	return func() { l.Events.Done(operation, true) }
+}
+
+// event reports one Bouncer step in the display, the way Compose reports its own.
+func (l *loaded) event(id string, status api.EventStatus, text string, details ...string) {
+	l.Events.On(api.Resource{ID: id, Status: status, Text: text, Details: strings.Join(details, " ")})
 }

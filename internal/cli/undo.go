@@ -10,6 +10,7 @@ import (
 	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/cuza/docker-bouncer/internal/transform"
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/compose/v5/pkg/api"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +23,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer l.show(ctx, "undo")()
 			if len(args) > 0 && len(selected(l.Derived.Services, args)) == 0 {
 				return configErr("%s is not a Service", args[0])
 			}
@@ -56,7 +58,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			for _, svc := range selected(l.Derived.Services, names) {
 				h := history[svc.Name]
 				if len(args) == 0 && len(h) < 2 {
-					fmt.Fprintf(dockerCli.Err(), "%s: nothing to undo (first revision)\n", svc.Name)
+					l.event("Service "+svc.Name, api.Warning, "Nothing to undo:", "first revision")
 					continue
 				}
 				target, err := undoTarget(h, to)
@@ -84,7 +86,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 						svcs = append(svcs, svc)
 					}
 				}
-				return bounceAll(ctx, dockerCli, l, svcs, func(svc config.Service) (types.ServiceConfig, error) {
+				return bounceAll(ctx, l, svcs, func(svc config.Service) (types.ServiceConfig, error) {
 					cur, err := current(ctx, l, svc.Name) // re-read under the lock
 					if err == nil && cur == nil {
 						err = fmt.Errorf("%s: no running replica with revision labels", svc.Name)
@@ -103,8 +105,8 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 					}
 					app, err := revision.Stamp(p.app, cur, upID, svc.Spec.HistoryMax, time.Now())
 					if err == nil {
-						fmt.Fprintf(dockerCli.Err(), "%s: revision %s = copy of %d; the compose file still describes revision %d, the next up rolls forward\n",
-							svc.Name, app.Labels[revision.LabelRevision], p.target.Revision, p.file)
+						l.event("Service "+svc.Name, api.Warning, fmt.Sprintf("Revision %s = copy of %d:", app.Labels[revision.LabelRevision], p.target.Revision),
+							fmt.Sprintf("the compose file still describes revision %d, the next up rolls forward", p.file))
 					}
 					return app, err
 				})

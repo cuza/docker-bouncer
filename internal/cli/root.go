@@ -16,6 +16,9 @@ type ProjectFlags struct {
 	Dir      string
 	Profiles []string
 	EnvFiles []string
+	// Progress and Timestamps pick the display (see newEvents).
+	Progress   string
+	Timestamps bool
 }
 
 func NewRoot(dockerCli command.Cli) *cobra.Command {
@@ -44,6 +47,8 @@ func NewRoot(dockerCli command.Cli) *cobra.Command {
 	f.StringVar(&pf.Dir, "project-directory", "", "Working directory")
 	f.StringArrayVar(&pf.Profiles, "profile", nil, "Profiles to enable")
 	f.StringArrayVar(&pf.EnvFiles, "env-file", nil, "Environment files")
+	f.StringVar(&pf.Progress, "progress", "auto", `Progress output: "auto" (tty on a terminal, else plain), "tty", "plain", "json", "quiet" (errors only)`)
+	f.BoolVar(&pf.Timestamps, "timestamps", false, "Prefix plain progress lines with an RFC 3339 UTC time (json always has one)")
 	addCommands(root, dockerCli, pf)
 	return root
 }

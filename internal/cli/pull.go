@@ -13,6 +13,7 @@ func pullCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer l.show(cmd.Context(), "pull")()
 			if len(args) > 0 {
 				p, err := l.Derived.Project.WithSelectedServices(expand(l, args), types.IgnoreDependencies)
 				if err != nil {

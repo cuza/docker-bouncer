@@ -16,6 +16,7 @@ func stopCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer l.show(cmd.Context(), "stop")()
 			opts := api.StopOptions{Project: l.Derived.Project, Services: expand(l, args)}
 			if cmd.Flags().Changed("timeout") {
 				d := time.Duration(timeout) * time.Second

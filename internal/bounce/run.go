@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/cuza/docker-bouncer/internal/config"
 	"github.com/cuza/docker-bouncer/internal/engine"
 	"github.com/cuza/docker-bouncer/internal/revision"
+	"github.com/docker/compose/v5/pkg/api"
 )
 
 // ErrFailed: the bounce gave up; the old version keeps serving.
@@ -31,13 +33,22 @@ type Runner struct {
 	Engine  engine.Engine
 	Proxy   engine.Proxy
 	Scaler  Scaler
-	Log     func(format string, a ...any)
+	Events  api.EventProcessor
 	Now     func() time.Time
 
 	runStart     time.Time
 	healthySince map[string]time.Time
 	listed       map[string]bool // nil until the first SetList of this run
+	unhealthy    map[string]bool // listed by this run, not reported Healthy yet
 }
+
+// event reports a step on the Service's row ("Service web") or a replica's
+// row ("Container proj-web-app-1", the row Compose created it on).
+func (r *Runner) event(id string, status api.EventStatus, text string, details ...string) {
+	r.Events.On(api.Resource{ID: id, Status: status, Text: text, Details: strings.Join(details, " ")})
+}
+
+func container(name string) string { return "Container " + name }
 
 func (r *Runner) observe(ctx context.Context) (State, error) {
 	reps, err := r.Engine.Replicas(ctx, r.Project, r.Svc.Name)
@@ -77,15 +88,31 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.runStart = r.Now()
 	r.healthySince = map[string]time.Time{}
 	r.listed = nil
+	r.unhealthy = map[string]bool{}
+	svc, progress := "Service "+r.Svc.Name, ""
 	for {
 		st, err := r.observe(ctx)
 		if err != nil {
 			return err
 		}
+		k := 0
+		for _, o := range st.Replicas {
+			if o.Hash == st.Desired && st.healthy(o) {
+				k++
+				if r.unhealthy[o.Name] {
+					delete(r.unhealthy, o.Name)
+					r.event(container(o.Name), api.Done, api.StatusHealthy)
+				}
+			}
+		}
 		step := Plan(st)
+		if p := fmt.Sprintf("Bouncing (%d/%d)", k, r.N); p != progress && step.Kind != Done && step.Kind != Fail {
+			progress = p
+			r.event(svc, api.Working, p)
+		}
 		switch step.Kind {
 		case Done:
-			r.Log("%s: converged (%d replicas)", r.Svc.Name, r.N)
+			r.event(svc, api.Done, "Converged", fmt.Sprintf("%d replicas", r.N))
 			return nil
 		case Wait:
 			r.Engine.Wait(ctx, r.Project, time.Second)
@@ -94,8 +121,13 @@ func (r *Runner) Run(ctx context.Context) error {
 			if err := r.setList(ctx, step.List); err != nil {
 				return err
 			}
-		case ScaleUp:
-			r.Log("%s: starting replica %d", r.Svc.Name, step.Total)
+			for _, o := range st.Replicas {
+				if !o.Listed && slices.Contains(step.List, o.Name) {
+					r.unhealthy[o.Name] = true
+					r.event(container(o.Name), api.Working, "Listed")
+				}
+			}
+		case ScaleUp: // Compose reports Creating/Starting on the new replica's row
 			if err := r.Scaler.ScaleUp(ctx, r.App, step.Total); err != nil {
 				return err
 			}
@@ -104,7 +136,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				return err
 			}
 		case Fail:
-			r.Log("%s: %s: %s", r.Svc.Name, step.Replica.Name, step.Reason)
+			r.event(svc, api.Error, "Failed: "+step.Replica.Name+" "+step.Reason)
 			if err := r.removeUnhealthyNew(ctx, st); err != nil {
 				return err
 			}
@@ -140,7 +172,7 @@ func (r *Runner) stopDraining(ctx context.Context, st State, added []string) {
 	for _, o := range st.Replicas {
 		if !o.Listed && slices.Contains(added, o.Name) && o.Created.Before(r.runStart) {
 			if _, err := r.call(ctx, o, c); err != nil {
-				r.Log("%s: stop_draining %s: %v", r.Svc.Name, o.Name, err)
+				r.event(container(o.Name), api.Warning, "stop_draining failed:", err.Error())
 			}
 		}
 	}
@@ -158,7 +190,8 @@ func without(st State, name string) []string {
 }
 
 func (r *Runner) drain(ctx context.Context, st State, o Observed) error {
-	r.Log("%s: draining %s", r.Svc.Name, o.Name)
+	start := r.Now()
+	r.event(container(o.Name), api.Working, "Draining")
 	if o.Listed {
 		if err := r.setList(ctx, without(st, o.Name)); err != nil {
 			return err
@@ -178,7 +211,7 @@ func (r *Runner) drain(ctx context.Context, st State, o Observed) error {
 				break
 			}
 			if err != nil && ctx.Err() == nil { // transient: keep waiting until the deadline
-				r.Log("%s: connections of %s: %v", r.Svc.Name, o.Name, err)
+				r.event(container(o.Name), api.Working, "Draining", "connections:", err.Error())
 			}
 			r.Engine.Wait(ctx, r.Project, 500*time.Millisecond)
 			if err := ctx.Err(); err != nil {
@@ -190,11 +223,11 @@ func (r *Runner) drain(ctx context.Context, st State, o Observed) error {
 			if err := r.httpDrain(ctx, o, deadline); ctx.Err() != nil {
 				return ctx.Err()
 			} else if err != nil {
-				r.Log("%s: http drain of %s: %v (stopping anyway)", r.Svc.Name, o.Name, err)
+				r.event(container(o.Name), api.Warning, "Draining", err.Error(), "(stopping anyway)")
 			}
 		}
 	}
-	return r.remove(ctx, st, o)
+	return r.remove(ctx, st, o, fmt.Sprintf("drained %s", r.Now().Sub(start).Round(100*time.Millisecond)))
 }
 
 // call sends one drain_method http request to the replica; ok when the code
@@ -254,15 +287,16 @@ func (r *Runner) removeUnhealthyNew(ctx context.Context, st State) error {
 	}
 	for _, o := range bad {
 		o.Listed = false // already out of the list
-		if err := r.remove(ctx, st, o); err != nil {
+		if err := r.remove(ctx, st, o, "unhealthy"); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// remove takes the replica out of the list, stops it, then removes it.
-func (r *Runner) remove(ctx context.Context, st State, o Observed) error {
+// remove takes the replica out of the list, stops it, then removes it; why
+// goes on the Stopped event.
+func (r *Runner) remove(ctx context.Context, st State, o Observed, why string) error {
 	if o.Listed {
 		if err := r.setList(ctx, without(st, o.Name)); err != nil {
 			return err
@@ -272,6 +306,11 @@ func (r *Runner) remove(ctx context.Context, st State, o Observed) error {
 		if err := r.Engine.Stop(ctx, o.ID); err != nil {
 			return err
 		}
+		r.event(container(o.Name), api.Done, api.StatusStopped, why)
 	}
-	return r.Engine.Remove(ctx, o.ID)
+	if err := r.Engine.Remove(ctx, o.ID); err != nil {
+		return err
+	}
+	r.event(container(o.Name), api.Done, api.StatusRemoved)
+	return nil
 }

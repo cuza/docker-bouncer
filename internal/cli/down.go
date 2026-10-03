@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/spf13/cobra"
@@ -15,7 +13,8 @@ func downCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(dockerCli.Err(), "warning: revision history lives on the replicas and is deleted with them")
+			defer l.show(cmd.Context(), "down")()
+			l.event("Project "+l.Derived.Project.Name, api.Warning, "Deleting revision history:", "it lives on the replicas")
 			return Exit(1, l.Compose.Down(cmd.Context(), l.Derived.Project.Name,
 				api.DownOptions{Project: l.Derived.Project, RemoveOrphans: true}))
 		}}

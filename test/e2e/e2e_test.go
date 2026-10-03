@@ -180,11 +180,11 @@ func TestUpTwiceIsNoop(t *testing.T) {
 `)
 	p.mustUp()
 	before := p.ids()
-	out, code := p.bouncer("up")
+	out, code := p.bouncer("up", "--progress", "plain")
 	if code != 0 {
 		t.Fatalf("second up: %d\n%s", code, out)
 	}
-	if strings.Contains(out, "proxy definition changed") {
+	if strings.Contains(out, "Proxy definition changed") {
 		t.Fatalf("second up warned about the proxy:\n%s", out)
 	}
 	if after := p.ids(); !mapsEqual(before, after) {
@@ -390,8 +390,8 @@ func TestResumeAfterKill(t *testing.T) {
 	}
 	time.Sleep(time.Second)
 	p.write(strings.Replace(p.yaml, ":v1", ":v2", 1))
-	b := p.start("up")
-	b.waitFor(t, "draining", 2*time.Minute)
+	b := p.start("up", "--progress", "plain")
+	b.waitFor(t, "Draining", 2*time.Minute)
 	time.Sleep(time.Second)
 	if err := syscall.Kill(b.plugin(t), syscall.SIGKILL); err != nil {
 		t.Fatal(err)
@@ -421,8 +421,8 @@ func TestInterruptReleasesLock(t *testing.T) {
 	go get(url(port, "/slow?s=30")) // keeps the old replica draining
 	time.Sleep(time.Second)
 	p.write(strings.Replace(p.yaml, ":v1", ":v2", 1))
-	b := p.start("up")
-	b.waitFor(t, "draining", 2*time.Minute)
+	b := p.start("up", "--progress", "plain")
+	b.waitFor(t, "Draining", 2*time.Minute)
 	// What Ctrl-C on a TTY delivers to the plugin (the CLI leaves it to the kernel).
 	if err := syscall.Kill(b.plugin(t), syscall.SIGINT); err != nil {
 		t.Fatal(err)
@@ -704,5 +704,28 @@ services:
 	}
 	if out, code := p.bouncer("up", "nope"); code != 2 {
 		t.Fatalf("up nope: exit %d, want 2\n%s", code, out)
+	}
+}
+
+// json progress is one object per line; -d and --wait are accepted no-ops.
+func TestProgressJSON(t *testing.T) {
+	p := project(t, api(freePort(t), 1, fast+`, drain_method_params: { delay: 1s }`))
+	out, code := p.bouncer("up", "-d", "--wait", "--progress", "json")
+	if code != 0 {
+		t.Fatalf("up: %d\n%s", code, out)
+	}
+	converged := false
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var e struct{ Time, Project, Service, Status, Message string }
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("not JSON: %q: %v\n%s", line, err, out)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, e.Time); err != nil || e.Project != p.name {
+			t.Fatalf("time/project: %q", line)
+		}
+		converged = converged || e.Service == "api" && e.Status == "Done" && strings.HasPrefix(e.Message, "Converged")
+	}
+	if !converged {
+		t.Fatalf("no Converged event for api:\n%s", out)
 	}
 }

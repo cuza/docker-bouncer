@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -29,12 +30,18 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "up [SERVICE...]",
 		Short: "Create or bounce the project",
+		Long: `Create or bounce the project.
+
+up always runs detached and always waits until every Service has converged:
+there is no attached mode, so Ctrl-C stops the bounce, never the project. -d/--detach
+and --wait are accepted for docker compose compatibility and change nothing.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			l, err := load(ctx, dockerCli, pf)
 			if err != nil {
 				return err
 			}
+			defer l.show(ctx, "up")()
 			switch pull {
 			case "", types.PullPolicyAlways, types.PullPolicyMissing, types.PullPolicyNever:
 			default:
@@ -49,12 +56,12 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			}
 			return withLock(ctx, dockerCli, l, forceUnlock, func() error {
 				// 1. Plain services and proxies through Compose (normal convergence).
-				if err := upPlainAndProxies(ctx, dockerCli, l, sel); err != nil {
+				if err := upPlainAndProxies(ctx, l, sel); err != nil {
 					return Exit(1, err)
 				}
 				// 2. Every Service bounces in parallel.
 				upID := time.Now().UTC().Format("20060102T150405Z")
-				return bounceAll(ctx, dockerCli, l, selected(l.Derived.Services, args), func(svc config.Service) (types.ServiceConfig, error) {
+				return bounceAll(ctx, l, selected(l.Derived.Services, args), func(svc config.Service) (types.ServiceConfig, error) {
 					return desiredApp(ctx, l, svc, upID)
 				})
 			})
@@ -62,6 +69,8 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&pull, "pull", "", `Pull policy override: "always", "missing", "never"`)
 	cmd.Flags().BoolVar(&forceUnlock, "force-unlock", false, "Take over a lock left by another run")
+	cmd.Flags().BoolP("detach", "d", true, "Compatibility only: up always runs detached")
+	cmd.Flags().Bool("wait", true, "Compatibility only: up always waits for every Service to converge")
 	return cmd
 }
 
@@ -74,9 +83,13 @@ func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool,
 	if err != nil {
 		return Exit(1, err)
 	}
+	id := "Lock " + name + "-bouncer-lock"
+	l.event(id, api.Done, "Acquired")
 	defer func() {
 		if err := release(context.WithoutCancel(ctx)); err != nil {
-			fmt.Fprintf(dockerCli.Err(), "warning: could not release lock %s-bouncer-lock: %v\n", name, err)
+			l.event(id, api.Warning, "Release failed:", err.Error())
+		} else {
+			l.event(id, api.Done, "Released")
 		}
 	}()
 	return fn()
@@ -84,18 +97,21 @@ func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool,
 
 // bounceAll bounces every Service in parallel to the replica config app
 // returns for it.
-func bounceAll(ctx context.Context, dockerCli command.Cli, l *loaded, svcs []config.Service, app func(config.Service) (types.ServiceConfig, error)) error {
+func bounceAll(ctx context.Context, l *loaded, svcs []config.Service, app func(config.Service) (types.ServiceConfig, error)) error {
 	var g errgroup.Group
 	for _, svc := range svcs {
 		g.Go(func() error {
-			if err := startStopped(ctx, l, svc, logf(dockerCli)); err != nil {
-				return err
+			err := startStopped(ctx, l, svc)
+			if err == nil {
+				var a types.ServiceConfig
+				if a, err = app(svc); err == nil {
+					err = upService(ctx, l, svc, a)
+				}
 			}
-			a, err := app(svc)
-			if err != nil {
-				return err
+			if err != nil && !errors.Is(err, bounce.ErrFailed) { // the runner reported that one
+				l.event("Service "+svc.Name, api.Error, "Failed: "+err.Error())
 			}
-			return upService(ctx, l, svc, a, logf(dockerCli))
+			return err
 		})
 	}
 	// bounce.ErrFailed or an engine error: old replicas still serve
@@ -119,7 +135,7 @@ func upProject(l *loaded, args []string) (*types.Project, error) {
 
 // upPlainAndProxies converges sel except replicas the normal Compose way. A
 // proxy is only recreated when its own definition changed.
-func upPlainAndProxies(ctx context.Context, dockerCli command.Cli, l *loaded, sel *types.Project) error {
+func upPlainAndProxies(ctx context.Context, l *loaded, sel *types.Project) error {
 	p := noPull(sel.WithServicesDisabled(appNames(l)...))
 	for _, s := range l.Derived.Services {
 		if _, ok := p.Services[s.Name]; !ok {
@@ -131,7 +147,7 @@ func upPlainAndProxies(ctx context.Context, dockerCli command.Cli, l *loaded, se
 		}
 		want, err := compose.ServiceHash(p.Services[s.Name])
 		if err == nil && running.Labels[api.ConfigHashLabel] != want {
-			fmt.Fprintf(dockerCli.Err(), "warning: %s: proxy definition changed; recreating it interrupts traffic briefly\n", s.Name)
+			l.event("Service "+s.Name, api.Warning, "Proxy definition changed: recreating", "(interrupts traffic briefly)")
 		}
 	}
 	l.mu.Lock()
@@ -145,7 +161,7 @@ func upPlainAndProxies(ctx context.Context, dockerCli command.Cli, l *loaded, se
 // startStopped starts the Service's stopped replicas (after `stop`, or a host
 // restart) so they count as running: the planner drains old ones and keeps
 // current ones instead of waiting on them until bounce_health_timeout.
-func startStopped(ctx context.Context, l *loaded, svc config.Service, log func(string, ...any)) error {
+func startStopped(ctx context.Context, l *loaded, svc config.Service) error {
 	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc.Name)
 	if err != nil || !slices.ContainsFunc(reps, func(r engine.Replica) bool { return !r.Running }) {
 		return err
@@ -157,7 +173,7 @@ func startStopped(ctx context.Context, l *loaded, svc config.Service, log func(s
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := l.Compose.Start(ctx, p.Name, api.StartOptions{Project: noPull(p)}); err != nil {
-		log("%s: starting stopped replicas: %v (the bounce drains the dead ones)", svc.Name, err)
+		l.event("Service "+svc.Name, api.Warning, "Starting stopped replicas failed:", err.Error(), "(the bounce drains the dead ones)")
 	}
 	return nil
 }
@@ -203,7 +219,7 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 	return revision.Stamp(app, cur, upID, svc.Spec.HistoryMax, time.Now())
 }
 
-func upService(ctx context.Context, l *loaded, svc config.Service, app types.ServiceConfig, log func(string, ...any)) error {
+func upService(ctx context.Context, l *loaded, svc config.Service, app types.ServiceConfig) error {
 	proxy, err := l.Engine.Container(ctx, l.Derived.Project.Name, map[string]string{transform.LabelRole: transform.RoleProxy, transform.LabelService: svc.Name})
 	if err != nil {
 		return err
@@ -230,7 +246,7 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 	return (&bounce.Runner{
 		Project: l.Derived.Project.Name, Svc: svc, App: app, N: app.GetScale(),
 		Engine: l.Engine, Proxy: px,
-		Scaler: composeScaler{l}, Log: log, Now: time.Now,
+		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now,
 	}).Run(ctx)
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/cuza/docker-bouncer/internal/config"
 	"github.com/cuza/docker-bouncer/internal/engine"
 	"github.com/cuza/docker-bouncer/internal/revision"
+	"github.com/docker/compose/v5/cmd/display"
 )
 
 type world struct {
@@ -60,10 +61,10 @@ func (w *world) runner(method string, n int, desired string) *Runner {
 	app.Labels = types.Labels{revision.LabelSpecHash: desired}
 	return &Runner{
 		Project: "proj", N: n, Engine: w, Proxy: w, Scaler: w,
-		Svc: config.Service{Name: "api", Spec: sp, Ports: []config.Port{{Target: 8080}}},
-		App: app,
-		Log: func(string, ...any) {},
-		Now: func() time.Time { return w.now },
+		Svc:    config.Service{Name: "api", Spec: sp, Ports: []config.Port{{Target: 8080}}},
+		App:    app,
+		Events: display.Quiet(),
+		Now:    func() time.Time { return w.now },
 	}
 }
 
