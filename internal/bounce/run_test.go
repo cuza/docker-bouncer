@@ -182,3 +182,27 @@ func TestRunStopDrainingOnReAdd(t *testing.T) {
 		t.Fatalf("listed %v http %v", w.list, w.http)
 	}
 }
+
+func TestRunBrutalStopsWithoutDraining(t *testing.T) {
+	w := newWorld("old", 1)
+	w.conns["proj-api-app-1"] = 1 << 30 // would block an envoy drain until drain_delay
+	r := w.runner(config.MethodBrutal, 1, "new")
+	r.Svc.Spec.DrainHTTP = config.HTTPDrain{Drain: &config.HTTPCall{Method: "POST", Path: "/drain"}}
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.hashes(); len(got) != 1 || got[0] != "new" || w.connPolls != 0 || len(w.http) != 0 {
+		t.Fatalf("replicas %v conn polls %d http %v", got, w.connPolls, w.http)
+	}
+	// still taken off the list before it stops
+	if w.events[len(w.events)-3] != "list:proj-api-app-2" || w.events[len(w.events)-2] != "stop:proj-api-app-1" {
+		t.Fatalf("events %v", w.events)
+	}
+	// the HTTP drain hooks are skipped too
+	w2 := newWorld("old", 1)
+	r2 := w2.runner(config.MethodBrutal, 1, "new")
+	r2.Svc.Spec.DrainMethod, r2.Svc.Spec.DrainHTTP = config.DrainHTTP, r.Svc.Spec.DrainHTTP
+	if err := r2.Run(context.Background()); err != nil || len(w2.http) != 0 {
+		t.Fatalf("err %v http %v", err, w2.http)
+	}
+}

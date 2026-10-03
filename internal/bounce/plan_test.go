@@ -1,6 +1,8 @@
 package bounce
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,5 +252,31 @@ func TestDeadlineCountsFromRunStart(t *testing.T) {
 	st.RunStart = t0.Add(-301 * time.Second)
 	if s := Plan(st); s.Kind != Fail || s.Replica.Name != "b" {
 		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestBrutalScalesUpBeforeDraining(t *testing.T) {
+	st := state(config.MethodBrutal, 2, rep("a", "old", true), rep("b", "old", true))
+	var got []string
+	for i := 0; i < 5; i++ {
+		s := Plan(st)
+		switch s.Kind {
+		case ScaleUp:
+			got = append(got, fmt.Sprintf("up%d", s.Total))
+			st.Replicas = append(st.Replicas, rep(fmt.Sprintf("n%d", s.Total), "new", false)) // running, no health
+		case Drain:
+			got = append(got, "drain")
+			for j, r := range st.Replicas {
+				if r.Name == s.Replica.Name {
+					st.Replicas = append(st.Replicas[:j:j], st.Replicas[j+1:]...)
+					break
+				}
+			}
+		default:
+			got = append(got, fmt.Sprint(s.Kind))
+		}
+	}
+	if want := "up3 up4 drain drain 1"; strings.Join(got, " ") != want { // 1 = Done
+		t.Fatalf("got %v want %s", got, want)
 	}
 }

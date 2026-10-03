@@ -166,7 +166,11 @@ func (r *Runner) drain(ctx context.Context, st State, o Observed) error {
 		o.Listed = false
 	}
 	deadline := r.Now().Add(r.Svc.Spec.DrainDelay)
-	switch r.Svc.Spec.DrainMethod {
+	method := r.Svc.Spec.DrainMethod
+	if r.Svc.Spec.BounceMethod == config.MethodBrutal {
+		method = "" // brutal: off the list, then stop at once (no drain wait)
+	}
+	switch method {
 	case config.DrainEnvoy:
 		for o.Running && r.Now().Before(deadline) {
 			n, err := r.Proxy.Conns(ctx, o.IPs)

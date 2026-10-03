@@ -198,15 +198,15 @@ func Plan(s State) Step {
 	surge, unavailable := Limits(s.N, s.Spec)
 
 	// 4. Drain an old replica when capacity allows (unserving, then oldest
-	//    first). Brutal always may: it drains every old replica before
-	//    scaling up, like downthenup without health gates.
+	//    first). Brutal creates all N new replicas first (up to 2N, no health
+	//    gate) and then drains old ones; the runner stops those at once.
 	r := old[0]
 	lost := 0 // draining a replica that serves nothing costs no capacity
 	if serving(r) {
 		lost = 1
 	}
 	canDrain := happyNew+liveOld-lost >= s.N-unavailable
-	if s.Spec.BounceMethod == config.MethodUpThenDown {
+	if s.Spec.BounceMethod == config.MethodUpThenDown || s.Spec.BounceMethod == config.MethodBrutal {
 		canDrain = happyNew >= s.N
 	}
 	if canDrain {
