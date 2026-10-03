@@ -43,6 +43,7 @@ type Spec struct {
 	MinTaskUptime       time.Duration
 	HealthTimeout       time.Duration
 	HealthPath          string
+	HealthStrict        bool // healthcheck.uri set: only 2xx is healthy; else any status below 500
 	DrainMethod         string
 	DrainDelay          time.Duration
 	DrainHTTP           HTTPDrain
@@ -116,7 +117,7 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 
 	s := Spec{
 		BounceMethod: MethodCrossover, MarginFactor: 0.95, OverprovisionFactor: 1.0,
-		MinTaskUptime: 10 * time.Second, HealthTimeout: 300 * time.Second, HealthPath: "/health",
+		MinTaskUptime: 10 * time.Second, HealthTimeout: 300 * time.Second, HealthPath: "/",
 		DrainMethod: DrainEnvoy, DrainDelay: 60 * time.Second, HistoryMax: 3, ProxyImage: DefaultProxyImage,
 	}
 	dur := func(name string, v *string, into *time.Duration) {
@@ -157,7 +158,7 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 			bad("healthcheck.mode: only http is supported")
 		}
 		if hc.URI != "" {
-			s.HealthPath = hc.URI
+			s.HealthPath, s.HealthStrict = hc.URI, true
 		}
 	}
 	if r.DrainMethod != nil {

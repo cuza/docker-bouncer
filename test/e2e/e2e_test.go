@@ -156,7 +156,7 @@ func TestSlowRequestsSurviveBounce(t *testing.T) {
 
 func TestNeverHealthyFailsAndOldServes(t *testing.T) {
 	port := freePort(t)
-	p := project(t, api(port, 2, `min_task_uptime: 1s, bounce_health_timeout: 15s, drain_method_params: { delay: 2s }`))
+	p := project(t, api(port, 2, `min_task_uptime: 1s, bounce_health_timeout: 15s, healthcheck: { uri: /health }, drain_method_params: { delay: 2s }`))
 	p.mustUp()
 	p.write(strings.Replace(p.yaml, "image: bouncer-e2e-app:v1", "image: bouncer-e2e-app:v2\n    environment: { UNHEALTHY: \"1\" }", 1))
 	if out, code := p.bouncer("up"); code != 1 {
@@ -582,6 +582,33 @@ func TestNoDockerHealthcheck(t *testing.T) {
 	close(stop)
 	if r := <-res; r.failures != 0 || r.total == 0 {
 		t.Fatalf("%d failed requests out of %d: %v", r.failures, r.total, r.samples)
+	}
+}
+
+// The default check is GET / accepting any non-5xx, so an image with no
+// health endpoint and no Docker healthcheck deploys and bounces as is.
+func TestDefaultHealthWorksWithoutHealthEndpoint(t *testing.T) {
+	port := freePort(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  web:
+    image: nginx:1.29-alpine
+    ports: ["127.0.0.1:%d:80"]
+    x-bouncer: { %s, drain_method_params: { delay: 2s } }
+`, port, fast))
+	p.mustUp()
+	stop := make(chan struct{})
+	res := load(t, url(port, "/"), stop)
+	p.write(strings.Replace(p.yaml, "nginx:1.29-alpine", "nginx:1.30-alpine", 1))
+	if out, code := p.bouncer("up"); code != 0 {
+		t.Fatalf("bounce: %d\n%s", code, out)
+	}
+	close(stop)
+	if r := <-res; r.failures != 0 || r.total == 0 {
+		t.Fatalf("%d failed requests out of %d: %v", r.failures, r.total, r.samples)
+	}
+	if img := p.images("web"); img["nginx:1.30-alpine"] != 1 || len(img) != 1 {
+		t.Fatalf("replica images %v", img)
 	}
 }
 

@@ -108,6 +108,12 @@ func Bootstrap(svc config.Service) string {
 // Clusters is the CDS file: one STRICT_DNS cluster per target port, every endpoint
 // health-checked on the first port.
 func Clusters(svc config.Service, hostnames []string) string {
+	// No healthcheck.uri: anything answering HTTP below 500 is up (404 on / is
+	// fine). An explicit uri must answer 2xx. Int64Range end is exclusive.
+	hcEnd := 500
+	if svc.Spec.HealthStrict {
+		hcEnd = 300
+	}
 	hosts := append([]string(nil), hostnames...)
 	sort.Strings(hosts)
 	hcPort := svc.Ports[0].Target
@@ -131,7 +137,8 @@ func Clusters(svc config.Service, hostnames []string) string {
 			"health_checks": []any{obj{
 				"timeout": "1s", "interval": "1s",
 				"unhealthy_threshold": 2, "healthy_threshold": 1,
-				"http_health_check": obj{"path": svc.Spec.HealthPath},
+				"http_health_check": obj{"path": svc.Spec.HealthPath,
+					"expected_statuses": []any{obj{"start": 200, "end": hcEnd}}},
 			}},
 			"load_assignment": obj{
 				"cluster_name": clusterName(port),

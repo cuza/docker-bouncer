@@ -32,12 +32,12 @@ func TestDefaults(t *testing.T) {
 	}
 	want := Spec{
 		BounceMethod: MethodCrossover, MarginFactor: 0.95, OverprovisionFactor: 1.0,
-		MinTaskUptime: 10 * time.Second, HealthTimeout: 300 * time.Second, HealthPath: "/health",
+		MinTaskUptime: 10 * time.Second, HealthTimeout: 300 * time.Second, HealthPath: "/",
 		DrainMethod: DrainEnvoy, DrainDelay: 60 * time.Second, HistoryMax: 3, ProxyImage: DefaultProxyImage,
 	}
 	if got.Spec.BounceMethod != want.BounceMethod || got.Spec.MarginFactor != want.MarginFactor ||
 		got.Spec.OverprovisionFactor != want.OverprovisionFactor || got.Spec.MinTaskUptime != want.MinTaskUptime ||
-		got.Spec.HealthTimeout != want.HealthTimeout || got.Spec.HealthPath != want.HealthPath ||
+		got.Spec.HealthTimeout != want.HealthTimeout || got.Spec.HealthPath != want.HealthPath || got.Spec.HealthStrict ||
 		got.Spec.DrainMethod != want.DrainMethod || got.Spec.DrainDelay != want.DrainDelay ||
 		got.Spec.HistoryMax != want.HistoryMax || got.Spec.ProxyImage != want.ProxyImage {
 		t.Fatalf("got %+v, want %+v", got.Spec, want)
@@ -61,7 +61,7 @@ func TestOverrides(t *testing.T) {
 	}
 	s := got.Spec
 	if s.BounceMethod != MethodUpThenDown || s.MarginFactor != 0.5 || s.OverprovisionFactor != 0.25 ||
-		s.MinTaskUptime != 3*time.Second || s.HealthTimeout != 2*time.Minute || s.HealthPath != "/ready" ||
+		s.MinTaskUptime != 3*time.Second || s.HealthTimeout != 2*time.Minute || s.HealthPath != "/ready" || !s.HealthStrict ||
 		s.DrainMethod != DrainNoop || s.DrainDelay != 95*time.Second || s.HistoryMax != 5 ||
 		s.ProxyImage != "envoyproxy/envoy:v1.39.0" {
 		t.Fatalf("got %+v", s)

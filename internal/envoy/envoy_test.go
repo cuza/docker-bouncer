@@ -10,7 +10,7 @@ import (
 
 func service() config.Service {
 	return config.Service{Name: "api", AdminPort: 9901,
-		Spec:  config.Spec{HealthPath: "/health"},
+		Spec:  config.Spec{HealthPath: "/"},
 		Ports: []config.Port{{Target: 8080, Published: "8080", HostIP: "127.0.0.1"}, {Target: 9090}}}
 }
 
@@ -59,7 +59,8 @@ func TestClustersOnePerPortWithHostnamesAndHealthCheck(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"type":"STRICT_DNS"`, `"dns_refresh_rate":"1s"`, `"dns_lookup_family":"V4_ONLY"`,
-		`"ignore_new_hosts_until_first_hc":true`, `"path":"/health"`,
+		`"ignore_new_hosts_until_first_hc":true`,
+		`"http_health_check":{"expected_statuses":[{"end":500,"start":200}],"path":"/"}`, // default: any non-5xx
 		`"unhealthy_threshold":2`, `"healthy_threshold":1`,
 		`"port_value":9090`,                         // the 9090 cluster's endpoints
 		`"health_check_config":{"port_value":8080}`, // every cluster checks the first port
@@ -70,6 +71,14 @@ func TestClustersOnePerPortWithHostnamesAndHealthCheck(t *testing.T) {
 	}
 	if strings.Index(s, "proj-api-app-1") > strings.Index(s, "proj-api-app-2") {
 		t.Error("hostnames must be sorted")
+	}
+}
+
+func TestClustersExplicitHealthURIRequires2xx(t *testing.T) {
+	svc := service()
+	svc.Spec.HealthPath, svc.Spec.HealthStrict = "/health", true
+	if s := Clusters(svc, []string{"h"}); !strings.Contains(s, `"http_health_check":{"expected_statuses":[{"end":300,"start":200}],"path":"/health"}`) {
+		t.Fatalf("clusters: %s", s)
 	}
 }
 

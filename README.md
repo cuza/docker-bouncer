@@ -36,8 +36,9 @@ Checksums are in each release's `SHA256SUMS`. From source:
 
 ## Quick start
 
-Add an `x-bouncer` block to an HTTP service. Envoy health-checks `GET /health`
-on the first port; the Docker `healthcheck` is optional.
+Add an `x-bouncer` block to an HTTP service. Envoy health-checks `GET /`
+on the first port (any status below 500 passes; an explicit `healthcheck.uri`
+must answer 2xx); the Docker `healthcheck` is optional.
 
 ```yaml
 services:
