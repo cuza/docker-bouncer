@@ -51,7 +51,7 @@ func TestDockerAndProxy(t *testing.T) {
 		"--entrypoint", ep[0], "envoyproxy/envoy:v1.39.1", ep[1], ep[2])
 
 	reps, err := e.Replicas(ctx, e2eProject, "api")
-	if err != nil || len(reps) != 1 || reps[0].Name != e2eProject+"-app-1" || !reps[0].Running || len(reps[0].IPs) != 1 || reps[0].Created.IsZero() {
+	if err != nil || len(reps) != 1 || reps[0].Name != e2eProject+"-app-1" || !reps[0].Running || len(reps[0].IPs) != 1 || reps[0].Created.IsZero() || reps[0].Started.IsZero() {
 		t.Fatalf("replicas %+v %v", reps, err)
 	}
 	px, err := e.Container(ctx, e2eProject, map[string]string{transform.LabelRole: transform.RoleProxy})

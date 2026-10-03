@@ -44,6 +44,10 @@ func TestLimitsRounding(t *testing.T) {
 			t.Errorf("n=%d over=%v margin=%v: got %d/%d want %d/%d", c.n, c.over, c.margin, su, un, c.surge, c.unavail)
 		}
 	}
+	// crossover must always be able to make progress
+	if su, un := Limits(4, config.Spec{BounceMethod: config.MethodCrossover, MarginFactor: 1}); su != 1 || un != 0 {
+		t.Errorf("crossover 0/0: got %d/%d want 1/0", su, un)
+	}
 }
 
 func TestNothingToDo(t *testing.T) {
@@ -169,5 +173,65 @@ func TestUnservingOldDoesNotBlockCrossover(t *testing.T) {
 	s := Plan(state(config.MethodCrossover, 1, a, rep("b", "new", true)))
 	if s.Kind != Drain || s.Replica.Name != "a" {
 		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestTwoOldOneUnservingDoesNotDeadlock(t *testing.T) {
+	b := rep("b", "old", false)
+	b.Listed, b.DockerHealth = false, "unhealthy"
+	st := state(config.MethodCrossover, 2, rep("a", "old", true), b, rep("c", "new", true))
+	st.Spec.OverprovisionFactor = 0.5 // surge 1, unavailable 0
+	if s := Plan(st); s.Kind != Drain || s.Replica.Name != "b" {
+		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestConvergedServiceIsDone(t *testing.T) {
+	a := rep("a", "new", true)
+	a.Created, a.Started, a.HealthySince = t0.Add(-time.Hour), t0.Add(-time.Hour), t0 // runner just reset HealthySince
+	if s := Plan(state(config.MethodCrossover, 1, a)); s.Kind != Done {
+		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestNeverHealthyFailsFromStartTime(t *testing.T) {
+	b := rep("b", "new", false)
+	b.Created, b.Started = t0.Add(-time.Hour), t0.Add(-301*time.Second)
+	if s := Plan(state(config.MethodCrossover, 1, rep("a", "old", true), b)); s.Kind != Fail || s.Replica.Name != "b" {
+		t.Fatalf("got %+v", s)
+	}
+	b.Started = t0.Add(-299 * time.Second)
+	if s := Plan(state(config.MethodCrossover, 1, rep("a", "old", true), b)); s.Kind == Fail {
+		t.Fatalf("deadline counts from Started, not Created: %+v", s)
+	}
+}
+
+func TestHealthyUnderUptimeDoesNotFail(t *testing.T) {
+	b := rep("b", "new", true)
+	b.Started, b.HealthySince = t0.Add(-301*time.Second), t0.Add(-5*time.Second)
+	if s := Plan(state(config.MethodCrossover, 1, rep("a", "old", true), b)); s.Kind != Wait {
+		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestRebootDoesNotDrainBelowCapacity(t *testing.T) {
+	var olds []Observed
+	for _, n := range []string{"a", "b"} {
+		o := rep(n, "old", false) // running, listed, Envoy not healthy yet
+		o.Created, o.Started = t0.Add(-time.Hour), t0.Add(-2*time.Second)
+		olds = append(olds, o)
+	}
+	if s := Plan(state(config.MethodCrossover, 2, olds...)); s.Kind != ScaleUp {
+		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestFlappingOldIsKeptWhileNewWarms(t *testing.T) {
+	a := rep("a", "old", false) // flapped to Envoy-unhealthy
+	a.Created, a.Started = t0.Add(-time.Hour), t0.Add(-time.Hour)
+	b := rep("b", "new", true)
+	b.HealthySince = t0.Add(-5 * time.Second)
+	if s := Plan(state(config.MethodCrossover, 1, a, b)); s.Kind == Drain {
+		t.Fatalf("draining a leaves zero serving: %+v", s)
 	}
 }

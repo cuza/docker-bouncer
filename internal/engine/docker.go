@@ -40,6 +40,9 @@ func (d *docker) list(ctx context.Context, project string, labels map[string]str
 			r.DockerHealth = string(c.State.Health.Status)
 		}
 		r.Created, _ = time.Parse(time.RFC3339Nano, c.Created)
+		if c.State != nil {
+			r.Started, _ = time.Parse(time.RFC3339Nano, c.State.StartedAt) // zero on failure
+		}
 		if c.NetworkSettings != nil {
 			for _, n := range c.NetworkSettings.Networks {
 				if n != nil && n.IPAddress.IsValid() {

@@ -13,6 +13,7 @@ type Replica struct {
 	Running      bool
 	DockerHealth string // "", "starting", "healthy", "unhealthy"
 	Created      time.Time
+	Started      time.Time // last start; zero if never started or unparsable
 	Labels       map[string]string
 }
 
