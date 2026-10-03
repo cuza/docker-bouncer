@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cuza/docker-bouncer/internal/config"
+	"github.com/cuza/docker-bouncer/internal/envoy"
 )
 
 type fakeEngine struct {
@@ -58,6 +59,11 @@ func TestSetListWaitsForUpdate(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(f.envs[1], " "), "proj-api-app-2") {
 		t.Fatal("cluster JSON must be passed in the exec environment")
+	}
+	write := strings.Join(f.execs[1], " ")
+	tmp := envoy.ClusterDir + "/.cds.tmp"
+	if !strings.Contains(write, "> "+tmp+" && mv "+tmp+" "+envoy.ClusterFile) {
+		t.Fatalf("write must go to a temp file in ClusterDir, then mv to ClusterFile: %s", write)
 	}
 }
 

@@ -93,6 +93,14 @@ func TestDockerAndProxy(t *testing.T) {
 	}
 	t.Logf("update_success %d -> %d after one SetList; unchanged across 3s of DNS refreshes", s0, s0+1)
 
+	// Execs (Bouncer's own, into the proxy) are not lifecycle events and must not wake Wait.
+	start := time.Now()
+	go func() { e.Exec(ctx, proxyID, nil, "true") }()
+	e.Wait(ctx, e2eProject, 2*time.Second)
+	if time.Since(start) < 2*time.Second {
+		t.Fatalf("Wait woke after %v on a non-lifecycle event", time.Since(start))
+	}
+
 	waited := make(chan struct{})
 	go func() { e.Wait(ctx, e2eProject, 10*time.Second); close(waited) }()
 	time.Sleep(500 * time.Millisecond)

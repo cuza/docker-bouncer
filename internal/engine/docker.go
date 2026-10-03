@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"github.com/cuza/docker-bouncer/internal/transform"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
@@ -27,8 +28,11 @@ func (d *docker) list(ctx context.Context, project string, labels map[string]str
 	var out []Replica
 	for _, s := range res.Items {
 		in, err := d.c.ContainerInspect(ctx, s.ID, client.ContainerInspectOptions{})
-		if err != nil {
+		if errdefs.IsNotFound(err) {
 			continue // removed between list and inspect
+		}
+		if err != nil {
+			return nil, err
 		}
 		c := in.Container
 		r := Replica{ID: c.ID, Name: trimSlash(c.Name), Running: c.State != nil && c.State.Running, Labels: c.Config.Labels}
@@ -98,7 +102,8 @@ func (d *docker) Wait(ctx context.Context, project string, timeout time.Duration
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ev := d.c.Events(ctx, client.EventsListOptions{Filters: client.Filters{}.
-		Add("type", "container").Add("label", "com.docker.compose.project="+project)})
+		Add("type", "container").Add("label", "com.docker.compose.project="+project).
+		Add("event", "create", "start", "die", "stop", "destroy", "health_status")})
 	select {
 	case <-ev.Messages:
 	case <-ev.Err:
