@@ -43,31 +43,7 @@ flowchart LR
   b -. "while a run is active" .-> l
 ```
 
-A crossover bounce of `api` with one replica:
-
-<p align="center">
-  <img src="docs/crossover.svg" width="720" alt="Animation: api-app-2 (v2) starts next to api-app-1 (v1), becomes healthy and joins Envoy's list; api-app-1 leaves the list, finishes its in-flight requests and is stopped and removed.">
-</p>
-
-Step by step:
-
-```mermaid
-sequenceDiagram
-  participant B as docker bouncer
-  participant C as Compose
-  participant E as Envoy (proxy)
-  participant Old as old replica
-  participant New as new replica
-  B->>C: scale api-app to 2 (Recreate=never)
-  C->>New: create and start
-  B->>E: add New to the cluster file
-  E->>New: health check passes for min_task_uptime
-  B->>E: remove Old from the cluster file
-  loop until 0 connections or delay
-    B->>E: read /proc/net/tcp
-  end
-  B->>Old: docker stop and rm
-```
+Each bounce method is animated under [How a bounce works](#how-a-bounce-works).
 
 There is no state store: every run reads the compose file, container labels
 and Envoy's live view. Each revision of a Service lives in its replicas'
@@ -182,6 +158,43 @@ Envoy reports it healthy, and it has stayed so for `min_task_uptime`.
 | `upthendown` | the loop with `surge = N`, `unavailable = 0` | none |
 | `downthenup` | drain and stop all old, then create new; a gap in service | Recreate |
 | `brutal` | create all N new replicas first (up to 2N), then stop old ones immediately: off the list, no health gates, no drain wait (dev only) | RollingUpdate, `maxUnavailable = 100%` |
+
+The animations below replace three v1 replicas with three v2 ones; each is
+generated from the real planner (`go run ./docs/animations` regenerates them).
+
+### crossover
+
+With `bounce_overprovision_factor: 0.33` (surge 1) each new replica joins
+before an old one leaves, so three replicas always serve.
+
+<p align="center">
+  <img src="docs/bounce-crossover.svg" width="760" alt="Animation: crossover with three replicas. app-4 (v2) starts, joins Envoy's list and turns healthy, then app-1 (v1) leaves the list, finishes its in-flight requests and is removed; app-5 and app-6 replace app-2 and app-3 the same way. Three replicas serve throughout and at most four exist.">
+</p>
+
+### upthendown
+
+All three new replicas start and turn healthy before any old one drains.
+
+<p align="center">
+  <img src="docs/bounce-upthendown.svg" width="760" alt="Animation: upthendown with three replicas. app-4, app-5 and app-6 (v2) start, join Envoy's list and turn healthy while app-1 to app-3 (v1) keep serving; only then are app-1, app-2 and app-3 drained and removed one at a time.">
+</p>
+
+### downthenup
+
+All old replicas drain first; requests fail until a new one is healthy.
+
+<p align="center">
+  <img src="docs/bounce-downthenup.svg" width="760" alt="Animation: downthenup with three replicas. app-1, app-2 and app-3 (v1) are drained and removed one at a time; with nothing serving, requests fail while app-4, app-5 and app-6 (v2) start, until each turns healthy and receives traffic.">
+</p>
+
+### brutal
+
+All new replicas start, then the old ones are stopped at once without
+waiting for health, so requests fail until a new replica is healthy.
+
+<p align="center">
+  <img src="docs/bounce-brutal.svg" width="760" alt="Animation: brutal with three replicas. app-4, app-5 and app-6 (v2) start and join Envoy's list; app-1, app-2 and app-3 (v1) are then taken off the list and removed at once, before any new replica is healthy, so requests fail until app-4 turns healthy.">
+</p>
 
 ### Drain methods
 
