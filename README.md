@@ -45,6 +45,12 @@ flowchart LR
 
 A crossover bounce of `api` with one replica:
 
+<p align="center">
+  <img src="docs/crossover.svg" width="720" alt="Animation: api-app-2 (v2) starts next to api-app-1 (v1), becomes healthy and joins Envoy's list; api-app-1 leaves the list, finishes its in-flight requests and is stopped and removed.">
+</p>
+
+Step by step:
+
 ```mermaid
 sequenceDiagram
   participant B as docker bouncer
