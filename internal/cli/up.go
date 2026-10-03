@@ -40,47 +40,62 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			default:
 				return Exit(2, fmt.Errorf(`--pull: %q is not "always", "missing" or "never"`, pull))
 			}
-			if err := prePull(ctx, l, pull, imagePresent(dockerCli)); err != nil {
+			if err := prePull(ctx, l, l.Derived.Project.Services, pull, imagePresent(dockerCli)); err != nil {
 				return Exit(2, err)
 			}
-			name := l.Derived.Project.Name
-			release, err := lock.Acquire(ctx, lock.NewDocker(dockerCli.Client()), name,
-				proxyImage(l), owner(), staleAfter(l), forceUnlock, time.Now())
-			if err != nil {
-				return Exit(1, err)
-			}
-			defer func() {
-				if err := release(context.WithoutCancel(ctx)); err != nil {
-					fmt.Fprintf(dockerCli.Err(), "warning: could not release lock %s-bouncer-lock: %v\n", name, err)
+			return withLock(ctx, dockerCli, l, forceUnlock, func() error {
+				// 1. Plain services and proxies through Compose (normal convergence).
+				if err := upPlainAndProxies(ctx, dockerCli, l); err != nil {
+					return Exit(1, err)
 				}
-			}()
-
-			// 1. Plain services and proxies through Compose (normal convergence).
-			if err := upPlainAndProxies(ctx, dockerCli, l); err != nil {
-				return Exit(1, err)
-			}
-			// 2. Every Service bounces in parallel.
-			upID := time.Now().UTC().Format("20060102T150405Z")
-			var g errgroup.Group
-			for _, svc := range selected(l.Derived.Services, args) {
-				g.Go(func() error {
-					if err := startStopped(ctx, l, svc, logf(dockerCli)); err != nil {
-						return err
-					}
-					app, err := desiredApp(ctx, l, svc, upID)
-					if err != nil {
-						return err
-					}
-					return upService(ctx, l, svc, app, logf(dockerCli))
+				// 2. Every Service bounces in parallel.
+				upID := time.Now().UTC().Format("20060102T150405Z")
+				return bounceAll(ctx, dockerCli, l, selected(l.Derived.Services, args), func(svc config.Service) (types.ServiceConfig, error) {
+					return desiredApp(ctx, l, svc, upID)
 				})
-			}
-			// bounce.ErrFailed or an engine error: old replicas still serve
-			return Exit(1, g.Wait())
+			})
 		},
 	}
 	cmd.Flags().StringVar(&pull, "pull", "", `Pull policy override: "always", "missing", "never"`)
 	cmd.Flags().BoolVar(&forceUnlock, "force-unlock", false, "Take over a lock left by another run")
 	return cmd
+}
+
+// withLock runs fn holding the project's lock and releases it even when ctx
+// was cancelled.
+func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool, fn func() error) error {
+	name := l.Derived.Project.Name
+	release, err := lock.Acquire(ctx, lock.NewDocker(dockerCli.Client()), name,
+		proxyImage(l), owner(), staleAfter(l), force, time.Now())
+	if err != nil {
+		return Exit(1, err)
+	}
+	defer func() {
+		if err := release(context.WithoutCancel(ctx)); err != nil {
+			fmt.Fprintf(dockerCli.Err(), "warning: could not release lock %s-bouncer-lock: %v\n", name, err)
+		}
+	}()
+	return fn()
+}
+
+// bounceAll bounces every Service in parallel to the replica config app
+// returns for it.
+func bounceAll(ctx context.Context, dockerCli command.Cli, l *loaded, svcs []config.Service, app func(config.Service) (types.ServiceConfig, error)) error {
+	var g errgroup.Group
+	for _, svc := range svcs {
+		g.Go(func() error {
+			if err := startStopped(ctx, l, svc, logf(dockerCli)); err != nil {
+				return err
+			}
+			a, err := app(svc)
+			if err != nil {
+				return err
+			}
+			return upService(ctx, l, svc, a, logf(dockerCli))
+		})
+	}
+	// bounce.ErrFailed or an engine error: old replicas still serve
+	return Exit(1, g.Wait())
 }
 
 // upPlainAndProxies converges everything except replicas the normal Compose
@@ -201,10 +216,10 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 // never everywhere else. Policy: --pull overrides; else the service's
 // pull_policy (default missing; "daily" counts as missing). The lock
 // container's image (the proxy image) is pulled when missing too.
-func prePull(ctx context.Context, l *loaded, override string, present func(context.Context, string) bool) error {
+func prePull(ctx context.Context, l *loaded, svcs types.Services, override string, present func(context.Context, string) bool) error {
 	var names []string
 	images := map[string]bool{}
-	for name, svc := range l.Derived.Project.Services {
+	for name, svc := range svcs {
 		policy := override
 		if policy == "" {
 			policy = svc.PullPolicy
@@ -223,7 +238,7 @@ func prePull(ctx context.Context, l *loaded, override string, present func(conte
 	}
 	p := &types.Project{Name: l.Derived.Project.Name, WorkingDir: l.Derived.Project.WorkingDir, Services: types.Services{}}
 	for _, n := range names {
-		s := l.Derived.Project.Services[n]
+		s := svcs[n]
 		s.PullPolicy = types.PullPolicyAlways // Compose skips missing/never services otherwise
 		p.Services[n] = s
 	}

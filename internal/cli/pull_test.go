@@ -69,7 +69,7 @@ func TestPrePullSelection(t *testing.T) {
 		service("tool", "registry/tool:1", types.PullPolicyNever, false), // absent but never
 	)
 	have := present(config.DefaultProxyImage, "registry/db:1", "registry/cache:1")
-	if err := prePull(context.Background(), l, "", have); err != nil {
+	if err := prePull(context.Background(), l, l.Derived.Project.Services, "", have); err != nil {
 		t.Fatal(err)
 	}
 	f := l.Compose.(*fakeCompose)
@@ -82,14 +82,14 @@ func TestPrePullSelection(t *testing.T) {
 	}
 
 	f.pulled = nil
-	if err := prePull(context.Background(), l, types.PullPolicyNever, present()); err != nil || f.pulled != nil {
+	if err := prePull(context.Background(), l, l.Derived.Project.Services, types.PullPolicyNever, present()); err != nil || f.pulled != nil {
 		t.Fatalf("--pull never pulled %v (%v)", f.pulled, err)
 	}
 }
 
 func TestPrePullLockImageWithoutServices(t *testing.T) {
 	l := derive(t, service("db", "registry/db:1", "", false))
-	if err := prePull(context.Background(), l, "", present("registry/db:1")); err != nil {
+	if err := prePull(context.Background(), l, l.Derived.Project.Services, "", present("registry/db:1")); err != nil {
 		t.Fatal(err)
 	}
 	if f := l.Compose.(*fakeCompose); len(f.pulled) != 1 || f.pulled["bouncer-lock"] != types.PullPolicyAlways {
