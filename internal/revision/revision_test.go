@@ -1,6 +1,8 @@
 package revision
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,12 +14,17 @@ import (
 
 func strp(s string) *string { return &s }
 
+func write(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func app(t *testing.T, envFileContent string) types.ServiceConfig {
 	t.Helper()
 	f := filepath.Join(t.TempDir(), "app.env")
-	if err := os.WriteFile(f, []byte(envFileContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	write(t, f, envFileContent)
 	a := types.ServiceConfig{Name: "api-app"}
 	a.Image = "registry/api@sha256:1"
 	a.EnvFiles = []types.EnvFile{{Path: f}}
@@ -25,7 +32,7 @@ func app(t *testing.T, envFileContent string) types.ServiceConfig {
 	return a
 }
 
-func TestStripRemovesEnvFileValuesOnly(t *testing.T) {
+func TestStripRemovesEnvFileKeysOnly(t *testing.T) {
 	s, err := Strip(app(t, "PASSWORD=old\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -59,8 +66,8 @@ func TestRestoreUsesCurrentSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(a.EnvFiles[0].Path, []byte("PASSWORD=rotated\n"), 0o600)
-	r, err := Restore(decoded)
+	write(t, a.EnvFiles[0].Path, "PASSWORD=rotated\n")
+	r, err := Restore(decoded, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,5 +119,105 @@ func TestLabelChangeChangesHash(t *testing.T) {
 	a.Labels[LabelRevision] = "9"
 	if _, h3, _ := Encode(a); h3 != h2 {
 		t.Fatal("revision labels must not affect the hash")
+	}
+}
+
+func TestStripIsKeyBasedForInterpolatedSecrets(t *testing.T) {
+	a := app(t, "DB_URL=postgres://u:${DB_PASS}@h\n")
+	a.Environment["DB_URL"] = strp("postgres://u:hunter2@h") // as the loader resolved it
+	spec, _, err := Encode(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Decode(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.Environment["DB_URL"]; ok {
+		t.Fatal("env-file key must not be stored")
+	}
+	var raw json.RawMessage
+	if err := unpack(spec, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("hunter2")) {
+		t.Fatalf("secret in label: %s", raw)
+	}
+}
+
+func TestDecodeKeepsRequired(t *testing.T) {
+	a := app(t, "PASSWORD=old\n")
+	a.EnvFiles[0].Required = true
+	spec, _, err := Encode(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Decode(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bool(d.EnvFiles[0].Required) {
+		t.Fatal("required lost")
+	}
+	if err := os.Remove(a.EnvFiles[0].Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(d, nil); err == nil {
+		t.Fatal("missing required env file must fail")
+	}
+}
+
+func TestRestoreInterpolatesProjectEnv(t *testing.T) {
+	a := app(t, "DB_URL=postgres://u:${DB_PASS}@h\n")
+	a.Environment["DB_URL"] = strp("postgres://u:hunter2@h")
+	spec, _, _ := Encode(a)
+	d, err := Decode(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Restore(d, map[string]string{"DB_PASS": "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *r.Environment["DB_URL"]; got != "postgres://u:new@h" {
+		t.Fatal(got)
+	}
+}
+
+func TestRestoreRawFormatVerbatim(t *testing.T) {
+	a := app(t, "TOKEN=a$b${c}\n")
+	a.EnvFiles[0].Format = "raw"
+	a.Environment["TOKEN"] = strp("a$b${c}")
+	spec, _, err := Encode(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Decode(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.Environment["TOKEN"]; ok {
+		t.Fatal("raw env-file key must not be stored")
+	}
+	r, err := Restore(d, map[string]string{"c": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *r.Environment["TOKEN"]; got != "a$b${c}" {
+		t.Fatal(got)
+	}
+}
+
+func TestStampNegativeHistoryMax(t *testing.T) {
+	s, err := Stamp(app(t, ""), nil, "u1", 3, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err = Stamp(app(t, ""), s.Labels, "u2", -1, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := History(s.Labels); len(h) != 1 {
+		t.Fatalf("history %+v", h)
 	}
 }

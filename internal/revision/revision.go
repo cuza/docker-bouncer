@@ -1,5 +1,10 @@
 // Package revision stores a Service's config and history on its replicas'
 // labels (gzip + base64 JSON), like Helm stores releases in Secrets.
+//
+// Every key defined in a service's env_file is stripped from the stored
+// environment, and Restore reads the files again, so an undo picks up the
+// current secrets. An explicit `environment:` key that also appears in an
+// env_file is stripped too, so on undo it follows the file.
 package revision
 
 import (
@@ -13,10 +18,12 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/docker/cli/pkg/kvfile"
 )
 
 const (
@@ -31,7 +38,21 @@ const (
 var revisionLabel = map[string]bool{LabelRevision: true, LabelSpec: true, LabelSpecHash: true,
 	LabelHistory: true, LabelUpID: true, LabelTime: true}
 
-var osStat = os.Stat
+// The `raw` env_file format is registered by the docker compose CLI, not by
+// compose-go; register the same parser (docker run --env-file semantics).
+func init() {
+	dotenv.RegisterFormat("raw", func(r io.Reader, filename string, vars map[string]string, lookup func(string) (string, bool)) error {
+		lines, err := kvfile.ParseFromReader(r, lookup)
+		if err != nil {
+			return fmt.Errorf("failed to parse env_file %s: %w", filename, err)
+		}
+		for _, line := range lines {
+			k, v, _ := strings.Cut(line, "=")
+			vars[k] = v
+		}
+		return nil
+	})
+}
 
 type Entry struct {
 	Revision int       `json:"revision"`
@@ -40,34 +61,50 @@ type Entry struct {
 	Spec     string    `json:"spec"`
 }
 
-// envFiles reads the app's env_file values now; missing optional files are skipped.
-func envFiles(app types.ServiceConfig) (map[string]string, error) {
-	var paths []string
-	for _, f := range app.EnvFiles {
-		if _, err := osStat(f.Path); err == nil || bool(f.Required) {
-			paths = append(paths, f.Path)
-		}
-	}
-	if len(paths) == 0 {
-		return map[string]string{}, nil
-	}
-	return dotenv.GetEnvFromFile(map[string]string{}, paths)
+// stored is what a spec label holds. EnvFile.Required does not survive
+// compose-go's JSON (OptOut is omitzero and true counts as zero), so it is
+// kept alongside.
+type stored struct {
+	Service  types.ServiceConfig `json:"service"`
+	Required []bool              `json:"env_files_required,omitempty"`
 }
 
-// Strip removes environment variables whose value came from env_file, so
-// secrets are never stored, and drops the revision labels themselves.
+// readEnvFiles parses the app's env_files like compose does: missing optional
+// files are skipped, a missing required file is an error.
+func readEnvFiles(app types.ServiceConfig, lookup dotenv.LookupFn) (map[string]string, error) {
+	vars := map[string]string{}
+	for _, f := range app.EnvFiles {
+		fh, err := os.Open(f.Path)
+		if os.IsNotExist(err) && !bool(f.Required) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("env file %s: %w", f.Path, err)
+		}
+		err = dotenv.ParseWithFormat(fh, f.Path, vars, lookup, f.Format)
+		fh.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return vars, nil
+}
+
+// Strip removes every environment key defined in an env_file (whatever its
+// value), so secrets are never stored, and drops the revision labels.
 func Strip(app types.ServiceConfig) (types.ServiceConfig, error) {
-	fromFiles, err := envFiles(app)
+	// Only the keys matter: a lookup that always succeeds needs no
+	// interpolation and never warns about unset variables.
+	keys, err := readEnvFiles(app, func(string) (string, bool) { return "", true })
 	if err != nil {
 		return app, err
 	}
 	out := app
 	out.Environment = types.MappingWithEquals{}
 	for k, v := range app.Environment {
-		if fv, ok := fromFiles[k]; ok && v != nil && *v == fv {
-			continue
+		if _, ok := keys[k]; !ok {
+			out.Environment[k] = v
 		}
-		out.Environment[k] = v
 	}
 	// Revision labels are bookkeeping, not part of the spec; every other
 	// label is (a label change is a change).
@@ -80,9 +117,19 @@ func Strip(app types.ServiceConfig) (types.ServiceConfig, error) {
 	return out, nil
 }
 
-// Restore re-reads EnvFiles now; explicit environment wins.
-func Restore(app types.ServiceConfig) (types.ServiceConfig, error) {
-	fromFiles, err := envFiles(app)
+// Restore reads the env_files now, resolving them against env (the project
+// environment) and then the service environment, as compose does; explicit
+// environment wins.
+func Restore(app types.ServiceConfig, env map[string]string) (types.ServiceConfig, error) {
+	fromFiles, err := readEnvFiles(app, func(k string) (string, bool) {
+		if v, ok := env[k]; ok {
+			return v, true
+		}
+		if v, ok := app.Environment[k]; ok && v != nil {
+			return *v, true
+		}
+		return "", false
+	})
 	if err != nil {
 		return app, err
 	}
@@ -132,19 +179,28 @@ func Encode(app types.ServiceConfig) (spec, hash string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	j, err := json.Marshal(s)
+	st := stored{Service: s}
+	for _, f := range s.EnvFiles {
+		st.Required = append(st.Required, bool(f.Required))
+	}
+	j, err := json.Marshal(st)
 	if err != nil {
 		return "", "", err
 	}
 	sum := sha256.Sum256(j)
-	spec, err = pack(s)
+	spec, err = pack(st)
 	return spec, hex.EncodeToString(sum[:8]), err
 }
 
 func Decode(spec string) (types.ServiceConfig, error) {
-	var s types.ServiceConfig
-	err := unpack(spec, &s)
-	return s, err
+	var st stored
+	if err := unpack(spec, &st); err != nil {
+		return types.ServiceConfig{}, err
+	}
+	for i := range st.Service.EnvFiles {
+		st.Service.EnvFiles[i].Required = types.OptOut(i < len(st.Required) && st.Required[i])
+	}
+	return st.Service, nil
 }
 
 // Stamp returns app with all revision labels. current is the labels of a
@@ -166,7 +222,7 @@ func Stamp(app types.ServiceConfig, current map[string]string, upID string, hist
 		history = all
 	}
 	if len(history) > historyMax {
-		history = history[:historyMax]
+		history = history[:max(historyMax, 0)]
 	}
 	h, err := pack(history)
 	if err != nil {
