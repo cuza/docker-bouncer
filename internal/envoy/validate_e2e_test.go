@@ -29,18 +29,20 @@ func TestEnvoyValidatesBootstrapAndClusters(t *testing.T) {
 	validate(t, dir+":"+ClusterDir+":ro", Bootstrap(service()))
 
 	// Validate mode never reads the CDS file, so check the clusters as static ones.
-	var doc struct {
-		Resources []map[string]any `json:"resources"`
+	for _, cds := range []string{cds, SeedClusters(service())} {
+		var doc struct {
+			Resources []map[string]any `json:"resources"`
+		}
+		if err := json.Unmarshal([]byte(cds), &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range doc.Resources {
+			delete(c, "@type")
+		}
+		b, err := json.Marshal(map[string]any{"static_resources": map[string]any{"clusters": doc.Resources}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		validate(t, dir+":"+ClusterDir+":ro", string(b))
 	}
-	if err := json.Unmarshal([]byte(cds), &doc); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range doc.Resources {
-		delete(c, "@type")
-	}
-	b, err := json.Marshal(map[string]any{"static_resources": map[string]any{"clusters": doc.Resources}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	validate(t, dir+":"+ClusterDir+":ro", string(b))
 }

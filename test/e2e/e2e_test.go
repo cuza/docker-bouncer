@@ -184,14 +184,43 @@ func TestUpTwiceIsNoop(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("second up: %d\n%s", code, out)
 	}
-	if strings.Contains(out, "Proxy definition changed") {
-		t.Fatalf("second up warned about the proxy:\n%s", out)
+	if strings.Contains(out, "Proxy definition changed") || strings.Contains(out, "Proxy config updated") {
+		t.Fatalf("second up touched the proxy:\n%s", out)
 	}
 	if after := p.ids(); !mapsEqual(before, after) {
 		t.Fatalf("container IDs changed:\nbefore %v\nafter  %v", before, after)
 	}
 	if h := p.history("api"); len(h) != 1 {
 		t.Fatalf("history: %q", h)
+	}
+}
+
+// A health config change is applied to the running proxy in place: nothing
+// is recreated and no request fails.
+func TestHealthChangeDoesNotRecreateProxy(t *testing.T) {
+	port := freePort(t)
+	p := project(t, api(port, 2, fast))
+	p.mustUp()
+	before := p.ids()
+	stop := make(chan struct{})
+	res := load(t, url(port, "/"), stop)
+	p.write(strings.Replace(p.yaml, fast, fast+", healthcheck: { uri: /health }", 1))
+	out, code := p.bouncer("up", "--progress", "plain")
+	close(stop)
+	if code != 0 {
+		t.Fatalf("up: %d\n%s", code, out)
+	}
+	if r := <-res; r.failures != 0 || r.total == 0 {
+		t.Fatalf("%d failed requests out of %d: %v", r.failures, r.total, r.samples)
+	}
+	if strings.Contains(out, "Proxy definition changed") || !strings.Contains(out, "Proxy config updated") {
+		t.Fatalf("want an in-place update:\n%s", out)
+	}
+	if after := p.ids(); !mapsEqual(before, after) {
+		t.Fatalf("container IDs changed:\nbefore %v\nafter  %v", before, after)
+	}
+	if cds := docker(t, "exec", p.proxy("api"), "cat", "/etc/bouncer/dyn/cds.json"); !strings.Contains(cds, `"path":"/health"`) {
+		t.Fatalf("cluster file lacks the new path: %s", cds)
 	}
 }
 

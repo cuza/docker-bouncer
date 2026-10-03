@@ -105,48 +105,96 @@ func Bootstrap(svc config.Service) string {
 	})
 }
 
-// Clusters is the CDS file: one STRICT_DNS cluster per target port, every endpoint
-// health-checked on the first port.
+// Clusters is the live CDS file: one STRICT_DNS cluster per target port, every
+// endpoint health-checked on the first port. Bouncer rewrites it in place.
 func Clusters(svc config.Service, hostnames []string) string {
-	// No healthcheck.uri: anything answering HTTP below 500 is up (404 on / is
-	// fine). An explicit uri must answer 2xx. Int64Range end is exclusive.
-	hcEnd := 500
-	if svc.Spec.HealthStrict {
-		hcEnd = 300
-	}
 	hosts := append([]string(nil), hostnames...)
 	sort.Strings(hosts)
-	hcPort := svc.Ports[0].Target
+	return render(svc, hosts, true)
+}
+
+// SeedClusters is the cluster file a freshly created proxy starts with: the
+// replicas' service alias, no health checks. It sits in the proxy's definition
+// (and so its config hash), so it holds nothing but what ports and the
+// service name decide; health settings arrive with the first live write.
+func SeedClusters(svc config.Service) string {
+	return render(svc, []string{SeedHost(svc)}, false)
+}
+
+func render(svc config.Service, hosts []string, live bool) string {
 	var resources []any
 	for _, port := range targets(svc) {
 		var endpoints []any
 		for _, h := range hosts {
-			endpoints = append(endpoints, obj{"endpoint": obj{
-				"address":             obj{"socket_address": obj{"address": h, "port_value": port}},
-				"health_check_config": obj{"port_value": hcPort},
-			}})
+			ep := obj{"address": obj{"socket_address": obj{"address": h, "port_value": port}}}
+			if live {
+				ep["health_check_config"] = obj{"port_value": svc.Ports[0].Target}
+			}
+			endpoints = append(endpoints, obj{"endpoint": ep})
 		}
-		resources = append(resources, obj{
+		c := obj{
 			"@type":             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
 			"name":              clusterName(port),
 			"type":              "STRICT_DNS",
 			"dns_refresh_rate":  "1s",
 			"dns_lookup_family": "V4_ONLY",
 			"connect_timeout":   "1s",
-			"common_lb_config":  obj{"ignore_new_hosts_until_first_hc": true},
-			"health_checks": []any{obj{
-				"timeout": "1s", "interval": "1s",
-				"unhealthy_threshold": 2, "healthy_threshold": 1,
-				"http_health_check": obj{"path": svc.Spec.HealthPath,
-					"expected_statuses": []any{obj{"start": 200, "end": hcEnd}}},
-			}},
 			"load_assignment": obj{
 				"cluster_name": clusterName(port),
 				"endpoints":    []any{obj{"lb_endpoints": endpoints}},
 			},
-		})
+		}
+		if live {
+			// No healthcheck.uri: anything answering HTTP below 500 is up (404 on / is
+			// fine). An explicit uri must answer 2xx. Int64Range end is exclusive.
+			hcEnd := 500
+			if svc.Spec.HealthStrict {
+				hcEnd = 300
+			}
+			c["common_lb_config"] = obj{"ignore_new_hosts_until_first_hc": true}
+			c["health_checks"] = []any{obj{
+				"timeout": "1s", "interval": "1s",
+				"unhealthy_threshold": 2, "healthy_threshold": 1,
+				"http_health_check": obj{"path": svc.Spec.HealthPath,
+					"expected_statuses": []any{obj{"start": 200, "end": hcEnd}}},
+			}}
+		}
+		resources = append(resources, c)
 	}
 	return mustJSON(obj{"resources": resources})
+}
+
+// Hostnames is the endpoint hostnames of a cluster file (its first cluster;
+// every cluster lists the same hosts).
+func Hostnames(cds string) ([]string, error) {
+	var doc struct {
+		Resources []struct {
+			LoadAssignment struct {
+				Endpoints []struct {
+					LbEndpoints []struct {
+						Endpoint struct {
+							Address struct {
+								SocketAddress struct {
+									Address string `json:"address"`
+								} `json:"socket_address"`
+							} `json:"address"`
+						} `json:"endpoint"`
+					} `json:"lb_endpoints"`
+				} `json:"endpoints"`
+			} `json:"load_assignment"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal([]byte(cds), &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Resources) == 0 || len(doc.Resources[0].LoadAssignment.Endpoints) == 0 {
+		return nil, fmt.Errorf("cluster file has no endpoints section")
+	}
+	var out []string
+	for _, e := range doc.Resources[0].LoadAssignment.Endpoints[0].LbEndpoints {
+		out = append(out, e.Endpoint.Address.SocketAddress.Address)
+	}
+	return out, nil
 }
 
 // Entrypoint seeds the cluster file only when the container has none yet, so

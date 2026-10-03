@@ -60,7 +60,7 @@ func Apply(in *types.Project) (*Result, error) {
 
 func proxy(svc types.ServiceConfig, bs config.Service) types.ServiceConfig {
 	bootstrap := envoy.Bootstrap(bs)
-	seed := envoy.Clusters(bs, []string{envoy.SeedHost(bs)})
+	seed := envoy.SeedClusters(bs)
 	interval := types.Duration(5 * time.Second)
 	adminPort := strconv.Itoa(bs.AdminPort)
 	p := types.ServiceConfig{

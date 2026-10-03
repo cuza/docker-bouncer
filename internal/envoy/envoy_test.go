@@ -82,6 +82,38 @@ func TestClustersExplicitHealthURIRequires2xx(t *testing.T) {
 	}
 }
 
+func TestSeedHasAliasAndNoHealthSettings(t *testing.T) {
+	s := SeedClusters(service())
+	for _, want := range []string{`"address":"api-app"`, `"type":"STRICT_DNS"`, `"connect_timeout":"1s"`, `"name":"port-9090"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("seed lacks %s", want)
+		}
+	}
+	for _, bad := range []string{"health", "ignore_new_hosts"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("seed must not carry %s settings: %s", bad, s)
+		}
+	}
+	strict := service()
+	strict.Spec.HealthPath, strict.Spec.HealthStrict = "/health", true
+	if SeedClusters(strict) != s {
+		t.Error("seed must not depend on health config")
+	}
+}
+
+func TestHostnamesReadsClusterFile(t *testing.T) {
+	h, err := Hostnames(Clusters(service(), []string{"b", "a"}))
+	if err != nil || strings.Join(h, ",") != "a,b" {
+		t.Fatalf("%v %v", h, err)
+	}
+	if h, err := Hostnames(Clusters(service(), nil)); err != nil || len(h) != 0 {
+		t.Fatalf("empty list: %v %v", h, err)
+	}
+	if _, err := Hostnames("garbage"); err == nil {
+		t.Fatal("garbage must not parse")
+	}
+}
+
 func TestEntrypointSeedsOnlyWhenAbsent(t *testing.T) {
 	e := strings.Join(Entrypoint(), " ")
 	if !strings.Contains(e, `[ -f /etc/bouncer/dyn/cds.json ] ||`) || !strings.Contains(e, `exec envoy --config-yaml "$BOUNCER_BOOTSTRAP"`) {

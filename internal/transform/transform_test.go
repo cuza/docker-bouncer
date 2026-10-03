@@ -90,3 +90,31 @@ func TestAppNameCollision(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// The proxy's definition (and so its Compose config hash) ignores health
+// config, which is applied in place; ports still change it.
+func TestProxyDefinitionStableAcrossHealthConfig(t *testing.T) {
+	proxyYAML := func(p *types.Project) string {
+		r, err := Apply(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := (&types.Project{Name: "x", Services: types.Services{"api": r.Project.Services["api"]}}).MarshalYAML()
+		return string(b)
+	}
+	base := proxyYAML(project())
+	hc := project()
+	api := hc.Services["api"]
+	api.Extensions = types.Extensions{"x-bouncer": map[string]any{"healthcheck": map[string]any{"uri": "/health"}}}
+	hc.Services["api"] = api
+	if got := proxyYAML(hc); got != base {
+		t.Fatalf("health config changed the proxy:\n%s\n---\n%s", base, got)
+	}
+	ports := project()
+	api = ports.Services["api"]
+	api.Ports = []types.ServicePortConfig{{Target: 9090, Published: "8080", HostIP: "127.0.0.1", Protocol: "tcp"}}
+	ports.Services["api"] = api
+	if proxyYAML(ports) == base {
+		t.Fatal("a port change must change the proxy")
+	}
+}

@@ -16,6 +16,7 @@ import (
 
 type Proxy interface {
 	SetList(ctx context.Context, hostnames []string) error
+	Current(ctx context.Context) (string, error) // the cluster file as it is now
 	Health(ctx context.Context) (map[string]bool, error)
 	Conns(ctx context.Context, ips []string) (int, error)
 	HTTP(ctx context.Context, method, host string, port int, path string) (int, error)
@@ -102,6 +103,10 @@ func (p *proxy) SetList(ctx context.Context, hostnames []string) error {
 		case <-time.After(p.poll):
 		}
 	}
+}
+
+func (p *proxy) Current(ctx context.Context) (string, error) {
+	return p.e.Exec(ctx, p.id, nil, "cat", envoy.ClusterFile)
 }
 
 func (p *proxy) Health(ctx context.Context) (map[string]bool, error) {

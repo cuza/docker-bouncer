@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cuza/docker-bouncer/internal/config"
+	"github.com/cuza/docker-bouncer/internal/envoy"
 )
 
 func TestRunCrossoverReplacesOldReplica(t *testing.T) {
@@ -204,5 +205,43 @@ func TestRunBrutalStopsWithoutDraining(t *testing.T) {
 	r2.Svc.Spec.DrainMethod, r2.Svc.Spec.DrainHTTP = config.DrainHTTP, r.Svc.Spec.DrainHTTP
 	if err := r2.Run(context.Background()); err != nil || len(w2.http) != 0 {
 		t.Fatalf("err %v http %v", err, w2.http)
+	}
+}
+
+// Settings in the proxy's cluster file are re-applied in place only when they
+// differ from what this version renders, keeping the listed hosts.
+func TestRunReconcilesClusterSettings(t *testing.T) {
+	w := newWorld("new", 2)
+	if err := w.runner(config.MethodCrossover, 2, "new").Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.events) != 0 {
+		t.Fatalf("identical file must not be rewritten: %v", w.events)
+	}
+
+	w = newWorld("new", 2)
+	r := w.runner(config.MethodCrossover, 2, "new")
+	stale := w.svc
+	stale.Spec.HealthPath = "/old"
+	w.cds = envoy.Clusters(stale, []string{"proj-api-app-1", "proj-api-app-2"})
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(w.events, "|") != "list:proj-api-app-1,proj-api-app-2" || w.cds != envoy.Clusters(w.svc, []string{"proj-api-app-1", "proj-api-app-2"}) {
+		t.Fatalf("stale settings must be re-applied with the same list: %v", w.events)
+	}
+}
+
+// A seed file (the replicas' alias) is replaced by the plan's real list, not
+// re-applied as is.
+func TestRunReplacesSeed(t *testing.T) {
+	w := newWorld("new", 1)
+	w.list = map[string]bool{}
+	w.cds = envoy.SeedClusters(config.Service{Name: "api", Ports: []config.Port{{Target: 8080}}})
+	if err := w.runner(config.MethodCrossover, 1, "new").Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(w.events, "|") != "list:proj-api-app-1" {
+		t.Fatalf("events %v", w.events)
 	}
 }

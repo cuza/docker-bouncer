@@ -10,6 +10,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/cuza/docker-bouncer/internal/config"
 	"github.com/cuza/docker-bouncer/internal/engine"
+	"github.com/cuza/docker-bouncer/internal/envoy"
 	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/docker/compose/v5/cmd/display"
 )
@@ -32,6 +33,8 @@ type world struct {
 	unsafe     int      // the next unsafe calls to /safe answer 503
 	onSafe     func()   // called on each /safe call
 	next       int
+	cds        string // the proxy's cluster file
+	svc        config.Service
 }
 
 // newWorld: n running replicas with hash h, all listed (as after a previous up).
@@ -59,9 +62,17 @@ func (w *world) runner(method string, n int, desired string) *Runner {
 	sp.DrainDelay = 60 * time.Second
 	app := types.ServiceConfig{Name: "api-app"}
 	app.Labels = types.Labels{revision.LabelSpecHash: desired}
+	w.svc = config.Service{Name: "api", Spec: sp, Ports: []config.Port{{Target: 8080}}}
+	if w.cds == "" { // as the previous up left it
+		var names []string
+		for n := range w.list {
+			names = append(names, n)
+		}
+		w.cds = envoy.Clusters(w.svc, names)
+	}
 	return &Runner{
 		Project: "proj", N: n, Engine: w, Proxy: w, Scaler: w,
-		Svc:    config.Service{Name: "api", Spec: sp, Ports: []config.Port{{Target: 8080}}},
+		Svc:    w.svc,
 		App:    app,
 		Events: display.Quiet(),
 		Now:    func() time.Time { return w.now },
@@ -117,8 +128,10 @@ func (w *world) SetList(_ context.Context, names []string) error {
 	for _, n := range names {
 		w.list[n] = true
 	}
+	w.cds = envoy.Clusters(w.svc, names)
 	return nil
 }
+func (w *world) Current(context.Context) (string, error) { return w.cds, nil }
 func (w *world) Health(context.Context) (map[string]bool, error) {
 	sick := w.sick > 0
 	if sick {

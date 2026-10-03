@@ -11,6 +11,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/cuza/docker-bouncer/internal/config"
 	"github.com/cuza/docker-bouncer/internal/engine"
+	"github.com/cuza/docker-bouncer/internal/envoy"
 	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/docker/compose/v5/pkg/api"
 )
@@ -90,6 +91,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.listed = nil
 	r.unhealthy = map[string]bool{}
 	svc, progress := "Service "+r.Svc.Name, ""
+	if err := r.reconcile(ctx); err != nil {
+		return err
+	}
 	for {
 		st, err := r.observe(ctx)
 		if err != nil {
@@ -146,6 +150,27 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+// reconcile rewrites the cluster file with the current list when its settings
+// differ from what this version renders (health config changed, or an older
+// Bouncer wrote it), so Envoy hot-reloads them instead of the proxy being
+// recreated. A seed (the replicas' alias) is left to the plan, which lists the
+// real replicas; an unreadable file too.
+func (r *Runner) reconcile(ctx context.Context) error {
+	cur, err := r.Proxy.Current(ctx)
+	if err != nil {
+		return err
+	}
+	hosts, err := envoy.Hostnames(cur)
+	if err != nil || slices.Equal(hosts, []string{envoy.SeedHost(r.Svc)}) || cur == envoy.Clusters(r.Svc, hosts) {
+		return nil
+	}
+	if err := r.Proxy.SetList(ctx, hosts); err != nil {
+		return err
+	}
+	r.event("Service "+r.Svc.Name, api.Working, "Proxy config updated")
+	return nil
 }
 
 func (r *Runner) setList(ctx context.Context, names []string) error {
