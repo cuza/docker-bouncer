@@ -194,15 +194,18 @@ func TestConvergedServiceIsDone(t *testing.T) {
 	}
 }
 
-func TestNeverHealthyFailsFromStartTime(t *testing.T) {
+func TestCrashLoopingReplicaFails(t *testing.T) {
 	b := rep("b", "new", false)
-	b.Created, b.Started = t0.Add(-time.Hour), t0.Add(-301*time.Second)
-	if s := Plan(state(config.MethodCrossover, 1, rep("a", "old", true), b)); s.Kind != Fail || s.Replica.Name != "b" {
+	b.Created, b.Started = t0.Add(-400*time.Second), t0.Add(-5*time.Second) // Docker refreshes Started on each restart
+	st := state(config.MethodCrossover, 1, rep("a", "old", true), b)
+	st.RunStart = t0.Add(-301 * time.Second)
+	if s := Plan(st); s.Kind != Fail || s.Replica.Name != "b" {
 		t.Fatalf("got %+v", s)
 	}
-	b.Started = t0.Add(-299 * time.Second)
-	if s := Plan(state(config.MethodCrossover, 1, rep("a", "old", true), b)); s.Kind == Fail {
-		t.Fatalf("deadline counts from Started, not Created: %+v", s)
+	b.Created = t0.Add(-299 * time.Second)
+	st = state(config.MethodCrossover, 1, rep("a", "old", true), b)
+	if s := Plan(st); s.Kind == Fail {
+		t.Fatalf("deadline counts from Created: %+v", s)
 	}
 }
 

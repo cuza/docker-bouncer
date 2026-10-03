@@ -117,13 +117,12 @@ func Plan(s State) Step {
 	sort.SliceStable(old, func(i, j int) bool { return !serving(old[i]) && serving(old[j]) })
 
 	// 1. A new replica that never became healthy within bounce_health_timeout
-	//    of its start fails the bounce.
+	//    of max(Created, RunStart) fails the bounce. Created, not Started:
+	//    Docker refreshes Started on every restart, so a crash loop would
+	//    never hit the deadline; RunStart covers reboots and flaps.
 	for i := range cur {
 		r := cur[i]
-		start := r.Started
-		if start.IsZero() {
-			start = r.Created
-		}
+		start := r.Created
 		if s.RunStart.After(start) { // every run gives a full window
 			start = s.RunStart
 		}
