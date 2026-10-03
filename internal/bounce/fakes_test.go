@@ -26,6 +26,9 @@ type world struct {
 	stopped    []string
 	events     []string
 	http       []string // "METHOD host path" of each HTTP call
+	connErrs   int      // the next connErrs Conns calls fail
+	unsafe     int      // the next unsafe calls to /safe answer 503
+	onSafe     func()   // called on each /safe call
 	next       int
 }
 
@@ -131,6 +134,10 @@ func (w *world) Health(context.Context) (map[string]bool, error) {
 }
 func (w *world) Conns(_ context.Context, ips []string) (int, error) {
 	w.connPolls++
+	if w.connErrs > 0 {
+		w.connErrs--
+		return 0, fmt.Errorf("exec failed")
+	}
 	for _, r := range w.reps {
 		if len(r.IPs) > 0 && r.IPs[0] == ips[0] && w.conns[r.Name] > 0 {
 			w.conns[r.Name]--
@@ -141,6 +148,15 @@ func (w *world) Conns(_ context.Context, ips []string) (int, error) {
 }
 func (w *world) HTTP(_ context.Context, method, host string, _ int, path string) (int, error) {
 	w.http = append(w.http, method+" "+host+" "+path)
+	if path == "/safe" {
+		if w.onSafe != nil {
+			w.onSafe()
+		}
+		if w.unsafe > 0 {
+			w.unsafe--
+			return 503, nil
+		}
+	}
 	return 200, nil
 }
 

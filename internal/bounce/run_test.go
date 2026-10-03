@@ -3,6 +3,7 @@ package bounce
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,71 @@ func TestRunDrainGivesUpAtDelay(t *testing.T) {
 	r.Svc.Spec.DrainDelay = 3 * time.Second
 	if err := r.Run(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if got := w.hashes(); len(got) != 1 || got[0] != "new" || len(w.stopped) != 1 || w.stopped[0] != "proj-api-app-1" {
+		t.Fatalf("replicas %v stopped %v", got, w.stopped)
+	}
+	if w.connPolls > 2 {
+		t.Fatalf("drain polled %d times past a 3s delay", w.connPolls)
+	}
+}
+
+func TestRunDrainSurvivesConnsError(t *testing.T) {
+	w := newWorld("old", 1)
+	w.connErrs = 1
+	w.conns["proj-api-app-1"] = 2
+	r := w.runner(config.MethodCrossover, 1, "new")
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if w.connPolls != 4 { // error, 2, 1, 0
+		t.Fatalf("drain stopped waiting after %d polls", w.connPolls)
+	}
+}
+
+func httpRunner(w *world) *Runner {
+	r := w.runner(config.MethodCrossover, 1, "new")
+	r.Svc.Spec.DrainMethod = config.DrainHTTP
+	r.Svc.Spec.DrainHTTP = config.HTTPDrain{Drain: &config.HTTPCall{Method: "POST", Path: "/drain"},
+		IsSafeToKill: &config.HTTPCall{Path: "/safe"}}
+	return r
+}
+
+func TestRunHTTPDrainPollsUntilSafe(t *testing.T) {
+	w := newWorld("old", 1)
+	w.unsafe = 2
+	if err := httpRunner(w).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := "proj-api-app-1"
+	want := []string{"POST " + h + " /drain", "GET " + h + " /safe", "GET " + h + " /safe", "GET " + h + " /safe"}
+	if strings.Join(w.http, "|") != strings.Join(want, "|") {
+		t.Fatalf("http %v", w.http)
+	}
+	if w.events[len(w.events)-2] != "stop:"+h || w.events[len(w.events)-1] != "rm:"+h {
+		t.Fatalf("events %v", w.events)
+	}
+}
+
+func TestRunHTTPDrainGivesUpAtDelay(t *testing.T) {
+	w := newWorld("old", 1)
+	w.unsafe = 1 << 30
+	if err := httpRunner(w).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.stopped) != 1 || w.stopped[0] != "proj-api-app-1" || len(w.http) > 14 {
+		t.Fatalf("stopped %v after %d calls", w.stopped, len(w.http))
+	}
+}
+
+func TestRunHTTPDrainStopsOnCancel(t *testing.T) {
+	w := newWorld("old", 1)
+	w.unsafe = 1 << 30
+	ctx, cancel := context.WithCancel(context.Background())
+	w.onSafe = cancel
+	err := httpRunner(w).Run(ctx)
+	if !errors.Is(err, context.Canceled) || len(w.http) != 2 || len(w.stopped) != 0 {
+		t.Fatalf("err %v http %v stopped %v", err, w.http, w.stopped)
 	}
 }
 

@@ -90,10 +90,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		case Wait:
 			r.Engine.Wait(ctx, r.Project, time.Second)
 		case SetList:
+			r.stopDraining(ctx, st, step.List)
 			if err := r.setList(ctx, step.List); err != nil {
 				return err
 			}
-			r.stopDraining(ctx, st, step.List)
 		case ScaleUp:
 			r.Log("%s: starting replica %d", r.Svc.Name, step.Total)
 			if err := r.Scaler.ScaleUp(ctx, r.App, step.Total); err != nil {
@@ -127,8 +127,11 @@ func (r *Runner) setList(ctx context.Context, names []string) error {
 	return nil
 }
 
-// stopDraining sends drain_method http's stop_draining to replicas re-added to
-// the list that predate this run: an earlier, killed run may have drained them.
+// stopDraining sends drain_method http's stop_draining to replicas about to be
+// re-added to the list that predate this run: an earlier, killed run may have
+// drained them. It also reaches replicas that were never drained (the first
+// run after the proxy was (re)created, a replica back from a failing Docker
+// healthcheck), so the endpoint must be idempotent, as PaaSTA's is.
 func (r *Runner) stopDraining(ctx context.Context, st State, added []string) {
 	c := r.Svc.Spec.DrainHTTP.StopDraining
 	if r.Svc.Spec.DrainMethod != config.DrainHTTP || c == nil {
@@ -167,14 +170,21 @@ func (r *Runner) drain(ctx context.Context, st State, o Observed) error {
 	case config.DrainEnvoy:
 		for o.Running && r.Now().Before(deadline) {
 			n, err := r.Proxy.Conns(ctx, o.IPs)
-			if err != nil || n == 0 {
+			if err != nil { // transient: keep waiting until the deadline
+				r.Log("%s: connections of %s: %v", r.Svc.Name, o.Name, err)
+			} else if n == 0 {
 				break
 			}
 			r.Engine.Wait(ctx, r.Project, 500*time.Millisecond)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 		}
 	case config.DrainHTTP:
 		if o.Running {
-			if err := r.httpDrain(ctx, o, deadline); err != nil {
+			if err := r.httpDrain(ctx, o, deadline); ctx.Err() != nil {
+				return ctx.Err()
+			} else if err != nil {
 				r.Log("%s: http drain of %s: %v (stopping anyway)", r.Svc.Name, o.Name, err)
 			}
 		}
@@ -208,6 +218,9 @@ func (r *Runner) httpDrain(ctx context.Context, o Observed, deadline time.Time) 
 			return nil
 		}
 		r.Engine.Wait(ctx, r.Project, time.Second)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 	return fmt.Errorf("not safe to kill after %s", r.Svc.Spec.DrainDelay)
 }
