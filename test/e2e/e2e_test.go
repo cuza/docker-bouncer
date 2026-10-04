@@ -1011,24 +1011,30 @@ services:
 	}
 }
 
-// A Service up with --profile is left alone by an up without it, shown live
-// by ps, and removed whole by down.
+// A Service up with --profile is left alone by an up without it and shown
+// live by ps. down without the profile removes its proxy and replicas but, as
+// docker compose down, leaves a plain service of that profile running.
 func TestProfiledServiceDown(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
     image: bouncer-e2e-app:v1
-    profiles: [x]
+    profiles: [database]
     deploy: { replicas: 2 }
     expose: ["8080"]
     x-bouncer: { %s }
+  db:
+    image: alpine:3.22
+    profiles: [database]
+    command: ["sleep", "infinity"]
+    stop_signal: SIGKILL
   side:
     image: alpine:3.22
     command: ["sleep", "infinity"]
     stop_signal: SIGKILL
 `, fast))
-	if out, code := p.bouncer("--profile", "x", "up"); code != 0 {
-		t.Fatalf("up --profile x: %d\n%s", code, out)
+	if out, code := p.bouncer("--profile", "database", "up"); code != 0 {
+		t.Fatalf("up --profile database: %d\n%s", code, out)
 	}
 	before := p.replicas("api")
 	p.write(strings.Replace(p.yaml, ":v1", ":v2", 1))
@@ -1043,7 +1049,20 @@ services:
 	if out, code := p.bouncer("down"); code != 0 {
 		t.Fatalf("down: %d\n%s", code, out)
 	}
+	if ids := p.containers("com.docker.compose.project="+p.name, "dev.cuza.bouncer.managed=true"); len(ids) != 0 {
+		t.Fatalf("down without the profile left api's proxy or replicas: %v", ids)
+	}
+	db := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.service=db")
+	if len(db) != 1 || docker(t, "inspect", "-f", "{{.State.Running}}", db[0]) != "true" {
+		t.Fatalf("down without the profile must leave db running: %v", db)
+	}
+	if ids := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.service=side"); len(ids) != 0 {
+		t.Fatalf("down left side: %v", ids)
+	}
+	if out, code := p.bouncer("--profile", "database", "down"); code != 0 {
+		t.Fatalf("down --profile database: %d\n%s", code, out)
+	}
 	if ids := p.containers("com.docker.compose.project=" + p.name); len(ids) != 0 {
-		t.Fatalf("down without the profile left %v", ids)
+		t.Fatalf("down --profile database left %v", ids)
 	}
 }

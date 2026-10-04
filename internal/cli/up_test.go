@@ -172,3 +172,28 @@ func TestUpProjectScopesToNamedServices(t *testing.T) {
 		t.Fatalf("unknown service: %v, want exit 2", err)
 	}
 }
+
+// down takes inactive Services' proxies and replicas, never inactive plain services.
+func TestDownProject(t *testing.T) {
+	api := service("api", "registry/api:1", "", true)
+	api.Profiles = []string{"database"}
+	api.DependsOn = types.DependsOnConfig{"db": {Condition: "service_started"}}
+	db := service("db", "registry/db:1", "", false)
+	db.Profiles = []string{"database"}
+	p := &types.Project{Name: "proj", Services: types.Services{"web": service("web", "registry/web:1", "", false)},
+		DisabledServices: types.Services{"api": api, "db": db}}
+	d, err := transform.Apply(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := downProject(d)
+	if !slices.Equal(got.ServiceNames(), []string{"api", "api-app", "web"}) || !slices.Equal(got.DisabledServiceNames(), []string{"db"}) {
+		t.Fatalf("services %v disabled %v", got.ServiceNames(), got.DisabledServiceNames())
+	}
+	if _, ok := got.Services["api-app"].DependsOn["db"]; ok {
+		t.Fatal("an edge to a disabled service must go")
+	}
+	if len(d.Project.Services) != 1 || len(d.Project.Services["web"].DependsOn) != 0 || d.Project.DisabledServices["api-app"].DependsOn["db"].Condition == "" {
+		t.Fatal("the derived project must not change")
+	}
+}

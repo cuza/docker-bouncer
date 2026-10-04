@@ -95,7 +95,7 @@ prefixes `plain` lines with an RFC 3339 UTC time.
 | `pull [SERVICE…]` | Pull images, including the proxy image |
 | `config` | The derived project |
 | `stop [SERVICE…] [-t N]` | Stop containers; no drain |
-| `down` | Remove the project, every profile included, and its revision history |
+| `down` | Remove the project and its revision history, including the proxies and replicas of Services in inactive profiles (plain services in inactive profiles keep running, as with `docker compose down`) |
 | `version [--short]` (or `--version`) | Show the version, plus the Compose library and default Envoy image it is built on |
 
 ## Documentation
