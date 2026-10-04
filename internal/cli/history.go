@@ -18,6 +18,9 @@ func historyCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := checkFormat(cmd.Context(), dockerCli, l, false, pf.IgnoreFormat); err != nil {
+				return err
+			}
 			cur, err := current(cmd.Context(), l, args[0])
 			if err != nil || cur == nil {
 				return Exit(1, fmt.Errorf("%s: no running replica with revision labels", args[0]))
@@ -27,7 +30,7 @@ func historyCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				return Exit(1, err)
 			}
 			w := tabwriter.NewWriter(dockerCli.Out(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "REVISION\tTIME\tIMAGE\tUP-ID")
+			fmt.Fprintln(w, "REVISION\tTIME\tIMAGE\tUP-ID\tVERSION")
 			for i, e := range h {
 				img := "?"
 				if spec, err := revision.Decode(e.Spec); err == nil {
@@ -41,7 +44,11 @@ func historyCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				if i == 0 {
 					mark = " *"
 				}
-				fmt.Fprintf(w, "%d%s\t%s\t%s\t%s\n", e.Revision, mark, e.Time.Format(time.RFC3339), img, e.UpID)
+				ver := e.Version
+				if ver == "" {
+					ver = "-" // made before versions were recorded
+				}
+				fmt.Fprintf(w, "%d%s\t%s\t%s\t%s\t%s\n", e.Revision, mark, e.Time.Format(time.RFC3339), img, e.UpID, ver)
 			}
 			return w.Flush()
 		}}

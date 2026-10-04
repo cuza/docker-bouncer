@@ -78,7 +78,12 @@ lock container `<project>-bouncer-lock`, created but never started, keeps two
 runs apart. Each revision records the exact image its reference named
 (`repo@digest`, or the image ID of a built or local image), so a tag that
 moved to a new image, or a rebuild, bounces, and `undo` runs the old image
-again.
+again. Replicas and the lock also carry the Bouncer version (shown by `ls`
+and `history`, never compared) and a `MAJOR.MINOR` storage format: any minor
+works with any CLI of the same major; a newer major makes `up` and `undo`
+refuse with exit 2 and `refresh` fail that project with exit 1 (read-only
+commands, `stop` and `down` warn), and
+`--ignore-format` overrides that.
 
 ## Commands
 
@@ -86,16 +91,17 @@ Global flags as Compose: `-f/--file`, `-p/--project-name`,
 `--project-directory`, `--profile`, `--env-file`, and
 `--progress auto|tty|plain|json|quiet` (Compose's progress display; `json` is
 one object per line for CI, `quiet` prints errors only). `--timestamps`
-prefixes `plain` lines with an RFC 3339 UTC time.
+prefixes `plain` lines with an RFC 3339 UTC time. `--ignore-format` changes a
+project whose storage format is newer than this CLI can safely change.
 
 | Command | Does |
 |---|---|
 | `up [SERVICE…] [--pull …] [--no-build] [--force-unlock] [-d] [--wait]` | Pull, build every `build:` service, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait`, `--build` accepted for compatibility) |
 | `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision, and its exact image |
 | `refresh [PROJECT…] [-a] [--dry-run] [--pull never]` | For every project with Services on this host (or the named ones): pull tags that moved and bounce, loading each project as its last `up` did; `-a` also recreates plain services whose image changed |
-| `history SERVICE` | Stored revisions |
+| `history SERVICE` | Stored revisions, with the Bouncer version that made each |
 | `ps` | Containers with role and revision |
-| `ls` | Projects with Services on this host: revision, replicas, status (`converged`, `drifted`, `bouncing`, `stopped`) and compose files |
+| `ls` | Projects with Services on this host: revision, replicas, status (`converged`, `drifted`, `bouncing`, `stopped`), Bouncer version, storage format and compose files |
 | `logs SERVICE [--follow] [--proxy] [-n N]` | Logs of all replicas, or the proxy |
 | `pull [SERVICE…]` | Pull images, including the proxy image |
 | `config` | The derived project |

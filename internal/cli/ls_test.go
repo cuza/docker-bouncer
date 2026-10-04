@@ -16,6 +16,9 @@ func TestLsTable(t *testing.T) {
 	c := func(project, role, svc, state, hash string) container.Summary {
 		l := map[string]string{api.ProjectLabel: project, api.ConfigFilesLabel: "/srv/" + project + "/compose.yaml",
 			transform.LabelRole: role, transform.LabelService: svc, revision.LabelRevision: "3", revision.LabelSpecHash: hash}
+		if project == "web" {
+			l[transform.LabelVersion], l[transform.LabelFormat] = "v1.2.0", "1.0"
+		}
 		if role == transform.RoleLock {
 			l = map[string]string{api.ProjectLabel: project, transform.LabelRole: role} // not created by Compose
 		}
@@ -41,12 +44,12 @@ func TestLsTable(t *testing.T) {
 		got = append(got, strings.Join(strings.Fields(line), " "))
 	}
 	want := []string{
-		"PROJECT SERVICE REVISION REPLICAS STATUS CONFIG FILES",
-		"busy api 3 1/1 bouncing /srv/busy/compose.yaml",
-		"halted api 3 0/2 stopped /srv/halted/compose.yaml",
-		"new api 3 2/2 drifted /srv/new/compose.yaml",
-		"off api 3 0/1 stopped /srv/off/compose.yaml",
-		"web api 3 2/2 converged /srv/web/compose.yaml",
+		"PROJECT SERVICE REVISION REPLICAS STATUS VERSION FORMAT CONFIG FILES",
+		"busy api 3 1/1 bouncing - - /srv/busy/compose.yaml",
+		"halted api 3 0/2 stopped - - /srv/halted/compose.yaml",
+		"new api 3 2/2 drifted - - /srv/new/compose.yaml",
+		"off api 3 0/1 stopped - - /srv/off/compose.yaml",
+		"web api 3 2/2 converged v1.2.0 1.0 /srv/web/compose.yaml",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

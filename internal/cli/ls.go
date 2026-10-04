@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"sort"
@@ -44,6 +45,7 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 	type row struct {
 		rev, total, happy, running int
 		hashes                     map[string]bool
+		version, format            string // of the newest replicas
 	}
 	rows := map[[2]string]*row{}
 	for _, c := range cs {
@@ -72,8 +74,9 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 				r.happy++
 			}
 		}
-		if n, _ := strconv.Atoi(c.Labels[revision.LabelRevision]); n > r.rev {
-			r.rev = n
+		if n, _ := strconv.Atoi(c.Labels[revision.LabelRevision]); n > r.rev || r.version == "" {
+			r.rev = max(r.rev, n)
+			r.version, r.format = c.Labels[transform.LabelVersion], c.Labels[transform.LabelFormat]
 		}
 		r.hashes[c.Labels[revision.LabelSpecHash]] = true
 	}
@@ -83,7 +86,7 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i][0]+"/"+keys[i][1] < keys[j][0]+"/"+keys[j][1] })
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "PROJECT\tSERVICE\tREVISION\tREPLICAS\tSTATUS\tCONFIG FILES")
+	fmt.Fprintln(w, "PROJECT\tSERVICE\tREVISION\tREPLICAS\tSTATUS\tVERSION\tFORMAT\tCONFIG FILES")
 	for _, k := range keys {
 		r := rows[k]
 		status := "converged"
@@ -99,7 +102,7 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 		if f == "" {
 			f = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d/%d\t%s\t%s\n", k[0], k[1], r.rev, r.happy, r.total, status, f)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d/%d\t%s\t%s\t%s\t%s\n", k[0], k[1], r.rev, r.happy, r.total, status, cmp.Or(r.version, "-"), cmp.Or(r.format, "-"), f)
 	}
 	return w.Flush()
 }

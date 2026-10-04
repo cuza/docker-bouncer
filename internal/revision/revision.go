@@ -44,7 +44,7 @@ const (
 )
 
 var revisionLabel = map[string]bool{LabelRevision: true, LabelSpec: true, LabelSpecHash: true,
-	LabelHistory: true, LabelUpID: true, LabelTime: true, transform.LabelInvocation: true}
+	LabelHistory: true, LabelUpID: true, LabelTime: true, transform.LabelInvocation: true, transform.LabelVersion: true, transform.LabelFormat: true}
 
 // The `raw` env_file format is registered by the docker compose CLI, not by
 // compose-go; register the same parser (docker run --env-file semantics).
@@ -66,7 +66,8 @@ type Entry struct {
 	Revision int             `json:"revision"`
 	Time     time.Time       `json:"time"`
 	UpID     string          `json:"up_id"`
-	Spec     json.RawMessage `json:"spec"` // the stored JSON, see Encode
+	Spec     json.RawMessage `json:"spec"`              // the stored JSON, see Encode
+	Version  string          `json:"version,omitempty"` // of the CLI that made it
 }
 
 // stored is what a spec label holds. EnvFile.Required does not survive
@@ -295,7 +296,7 @@ func History(labels map[string]string) ([]Entry, error) {
 		return nil, fmt.Errorf("no revision label: %w", err)
 	}
 	t, _ := time.Parse(time.RFC3339, labels[LabelTime])
-	out := []Entry{{Revision: rev, Time: t, UpID: labels[LabelUpID]}}
+	out := []Entry{{Revision: rev, Time: t, UpID: labels[LabelUpID], Version: labels[transform.LabelVersion]}}
 	if err := unpack(labels[LabelSpec], &out[0].Spec); err != nil {
 		return nil, err
 	}

@@ -47,9 +47,10 @@ func TestInvocationNotInSpecHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.Labels = types.Labels{"a": "b", transform.LabelInvocation: invocation{Command: "up", Dir: "/elsewhere"}.encode()}
+	app.Labels = types.Labels{"a": "b", transform.LabelInvocation: invocation{Command: "up", Dir: "/elsewhere"}.encode(),
+		transform.LabelVersion: "v9.9.9", transform.LabelFormat: "1.7"} // a CLI upgrade alone never bounces
 	if _, got, _ := revision.Encode(app); got != want {
-		t.Fatalf("hash %s with the invocation label, %s without", got, want)
+		t.Fatalf("hash %s with the bookkeeping labels, %s without", got, want)
 	}
 }
 

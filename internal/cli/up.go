@@ -46,6 +46,9 @@ unchanged one is a cached no-op. --no-build skips building.`,
 			if err != nil {
 				return err
 			}
+			if err := checkFormat(ctx, dockerCli, l, true, pf.IgnoreFormat); err != nil {
+				return err
+			}
 			defer l.show(ctx, "up")()
 			switch pull {
 			case "", types.PullPolicyAlways, types.PullPolicyMissing, types.PullPolicyNever:
@@ -92,7 +95,8 @@ unchanged one is a cached no-op. --no-build skips building.`,
 // was cancelled.
 func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool, fn func() error) error {
 	name := l.Derived.Project.Name
-	release, err := lock.Acquire(ctx, lock.NewDocker(dockerCli.Client()), name,
+	time.Sleep(e2eLockDelay)
+	release, err := lock.Acquire(ctx, versionLocker{lock.NewDocker(dockerCli.Client())}, name,
 		proxyImage(l), owner(), staleAfter(l), force, time.Now())
 	if err != nil {
 		return Exit(1, err)
@@ -106,6 +110,11 @@ func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool,
 			l.event(id, api.Done, "Released")
 		}
 	}()
+	if l.recheck != nil { // another run may have rewritten the stack since the early check
+		if err := l.recheck(ctx); err != nil {
+			return err
+		}
+	}
 	return fn()
 }
 
@@ -233,13 +242,13 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 				app.Labels[k] = v
 			}
 		}
-		app.Labels[transform.LabelInvocation] = l.inv.encode() // outside the hash: replicas scaled up now record this run
+		stamp(&app, l.inv) // bookkeeping, outside the hash: replicas scaled up now record this run
 		return app, nil
 	}
 	app, kept, err := revision.Stamp(app, cur, upID, svc.Spec.HistoryMax, time.Now())
 	if err == nil {
 		warnTrimmed(l, svc, kept)
-		app.Labels[transform.LabelInvocation] = l.inv.encode()
+		stamp(&app, l.inv)
 	}
 	return app, err
 }

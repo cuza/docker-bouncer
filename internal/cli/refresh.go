@@ -33,6 +33,7 @@ type refreshOptions struct {
 	pull           string
 	progress       string
 	timestamps     bool
+	ignoreFormat   bool
 	present        func(context.Context, string) bool
 	registryDigest func(ctx context.Context, ref string) (string, error)
 }
@@ -80,7 +81,7 @@ to date or skipped; 1 when one failed; 2 on a usage or config error.`,
 			if err != nil {
 				return err
 			}
-			o.progress, o.timestamps, o.present = pf.Progress, pf.Timestamps, imagePresent(dockerCli)
+			o.progress, o.timestamps, o.ignoreFormat, o.present = pf.Progress, pf.Timestamps, pf.IgnoreFormat, imagePresent(dockerCli)
 			o.registryDigest = func(ctx context.Context, ref string) (string, error) {
 				auth, _ := command.RetrieveAuthTokenFromImage(dockerCli.ConfigFile(), ref)
 				res, err := dockerCli.Client().DistributionInspect(ctx, ref, client.DistributionInspectOptions{EncodedRegistryAuth: auth})
@@ -216,15 +217,24 @@ func refreshProject(ctx context.Context, dockerCli command.Cli, ev api.EventProc
 		say(api.Error, "Failed: "+err.Error())
 		return refreshResult{status: failed, err: err}
 	}
-	inv, ok, err := decodeInvocation(hp.labels[transform.LabelInvocation])
-	if err != nil {
-		return fail(Exit(1, fmt.Errorf("invocation label: %w", err)))
-	}
-	if !ok {
+	if hp.labels[transform.LabelInvocation] == "" {
 		return skip("no invocation recorded; run `docker bouncer up` once")
 	}
 	if !hp.running {
 		return skip("stopped; `docker bouncer up` starts it")
+	}
+	labels, err := stackLabels(ctx, dockerCli.Client(), name)
+	if err != nil {
+		return fail(Exit(1, err))
+	}
+	refuse, notes := formatCheck(name, labels, true, o.ignoreFormat)
+	if refuse != nil {
+		return fail(Exit(1, refuse)) // a failed project, not a usage error
+	}
+	ev.On(notes...)
+	inv, _, err := decodeInvocation(hp.labels[transform.LabelInvocation])
+	if err != nil {
+		return fail(Exit(1, fmt.Errorf("invocation label: %w", err)))
 	}
 	l, err := loadWith(ctx, dockerCli, inv.flags(o.progress, o.timestamps), ev)
 	if err != nil {
@@ -279,6 +289,7 @@ func refreshProject(ctx context.Context, dockerCli command.Cli, ev api.EventProc
 			say(api.Done, "Pulled", strings.Join(moved, ", "))
 		}
 	}
+	l.recheck = func(ctx context.Context) error { return refuseFormat(ctx, dockerCli, name, o.ignoreFormat, 1) }
 	var mu sync.Mutex
 	changed := false
 	err = withLock(ctx, dockerCli, l, false, func() error {
