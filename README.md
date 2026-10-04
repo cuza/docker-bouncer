@@ -72,7 +72,8 @@ Each Service `api` becomes an Envoy proxy named `api` (it keeps the ports,
 networks and aliases) plus replicas `api-app`. Bouncer drives the proxy with
 `docker exec`, rewriting its cluster list and reading its health checks. The
 proxy appends the caller's address to `X-Forwarded-For` and keeps an incoming
-`X-Forwarded-Proto`. A
+`X-Forwarded-Proto`, and passes WebSocket upgrades (plus any listed in
+`x-bouncer.upgrade_types`). A
 lock container `<project>-bouncer-lock`, created but never started, keeps two
 runs apart.
 

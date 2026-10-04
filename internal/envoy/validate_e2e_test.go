@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,7 +27,12 @@ func TestEnvoyValidatesBootstrapAndClusters(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "cds.json"), []byte(cds), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	validate(t, dir+":"+ClusterDir+":ro", Bootstrap(service()))
+	// Envoy accepts the upgrade types and the disabled stream idle timeout.
+	boot := Bootstrap(service())
+	if !strings.Contains(boot, `"stream_idle_timeout":"0s"`) || !strings.Contains(boot, `"upgrade_type":"derp"`) {
+		t.Fatalf("bootstrap lacks the upgrade settings: %s", boot)
+	}
+	validate(t, dir+":"+ClusterDir+":ro", boot)
 
 	// Validate mode never reads the CDS file, so check the clusters as static ones.
 	for _, cds := range []string{cds, SeedClusters(service())} {

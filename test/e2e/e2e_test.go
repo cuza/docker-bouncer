@@ -3,10 +3,12 @@
 package e2e
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -1117,5 +1119,54 @@ services:
 	}
 	if ids := p.containers("com.docker.compose.project=" + p.name); len(ids) != 0 {
 		t.Fatalf("down --profile database left %v", ids)
+	}
+}
+
+// upgrade does a raw HTTP/1.1 upgrade through the proxy and, on 101, checks
+// that bytes sent come back. It returns the response status.
+func upgrade(t *testing.T, port int, typ string) int {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: %s\r\n"+
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", typ)
+	br := bufio.NewReader(conn)
+	res, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("%s: %v", typ, err)
+	}
+	if res.StatusCode != http.StatusSwitchingProtocols {
+		return res.StatusCode
+	}
+	// The RFC 6455 example key and its accept value.
+	if typ == "websocket" && res.Header.Get("Sec-WebSocket-Accept") != "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" {
+		t.Errorf("%s: Sec-WebSocket-Accept %q", typ, res.Header.Get("Sec-WebSocket-Accept"))
+	}
+	for _, msg := range []string{"ping", "pong"} {
+		if _, err := io.WriteString(conn, msg); err != nil {
+			t.Fatal(err)
+		}
+		got := make([]byte, len(msg))
+		if _, err := io.ReadFull(br, got); err != nil || string(got) != msg {
+			t.Fatalf("%s: echo %q %v, want %q", typ, got, err, msg)
+		}
+	}
+	return res.StatusCode
+}
+
+// WebSockets pass by default, a type listed in upgrade_types passes, and any
+// other upgrade gets Envoy's 403.
+func TestUpgradesPassThroughProxy(t *testing.T) {
+	port := freePort(t)
+	p := project(t, api(port, 1, fast+`, upgrade_types: [DERP]`))
+	p.mustUp()
+	for typ, want := range map[string]int{"websocket": 101, "derp": 101, "h2c-nope": 403} {
+		if got := upgrade(t, port, typ); got != want {
+			t.Errorf("Upgrade: %s got %d, want %d", typ, got, want)
+		}
 	}
 }

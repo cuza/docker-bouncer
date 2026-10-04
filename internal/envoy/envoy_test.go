@@ -10,7 +10,7 @@ import (
 
 func service() config.Service {
 	return config.Service{Name: "api", AdminPort: 9901,
-		Spec:  config.Spec{HealthPath: "/"},
+		Spec:  config.Spec{HealthPath: "/", UpgradeTypes: []string{"websocket", "derp"}},
 		Ports: []config.Port{{Target: 8080, Published: "8080", HostIP: "127.0.0.1"}, {Target: 9090}}}
 }
 
@@ -26,6 +26,8 @@ func TestBootstrapListenersRoutesAndAdmin(t *testing.T) {
 		`"cluster":"port-8080"`, `"timeout":"0s"`,
 		`"validate_clusters":false`,
 		`"use_remote_address":true`, `"xff_num_trusted_hops":1`, `"preserve_external_request_id":true`,
+		`"upgrade_configs":[{"upgrade_type":"websocket"},{"upgrade_type":"derp"}]`,
+		`"stream_idle_timeout":"0s"`,
 		`"retry_on":"connect-failure,refused-stream,reset-before-request"`,
 		`"num_retries":3`, `envoy.retry_host_predicates.previous_hosts`,
 		`"path":"/etc/bouncer/dyn/cds.json"`, `"watched_directory":{"path":"/etc/bouncer/dyn"}`,
