@@ -222,6 +222,10 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 	if err != nil {
 		return app, err
 	}
+	if app.Build != nil && cur[labelImage] != "" && cur[labelImage] != app.Labels[labelImage] &&
+		sameBuild(ctx, l, svc.Name, cur[labelImage], app.Labels[labelImage]) {
+		app.Labels[labelImage] = cur[labelImage] // pinImage's copy
+	}
 	_, hash, err := revision.Encode(app)
 	if err != nil {
 		return app, err
@@ -389,6 +393,28 @@ func pinImage(ctx context.Context, l *loaded, app types.ServiceConfig) (types.Se
 	labels[labelImage] = exact
 	app.Labels = labels
 	return app, nil
+}
+
+// sameBuild: the image just built holds the platform manifest a running
+// replica pinned to running runs. With BuildKit and the containerd image
+// store an unchanged rebuild is a new image ID, because its provenance
+// attestation changes, while its image manifest does not; keeping the
+// running pin makes it no new revision, so no bounce.
+func sameBuild(ctx context.Context, l *loaded, svc, running, built string) bool {
+	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc)
+	if err != nil {
+		return false
+	}
+	manifests, err := l.Engine.ImageManifests(ctx, built)
+	if err != nil {
+		return false
+	}
+	for _, r := range reps {
+		if r.Running && r.Labels[labelImage] == running && r.Manifest != "" {
+			return slices.Contains(manifests, r.Manifest)
+		}
+	}
+	return false
 }
 
 // repoDigest is ref's repository @ the digest under which it holds the

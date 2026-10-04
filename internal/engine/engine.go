@@ -12,6 +12,7 @@ type Replica struct {
 	IPs          []string
 	Running      bool
 	ExitCode     int    // of the last run, when not running
+	Manifest     string // the platform manifest it runs; "" without the containerd image store
 	DockerHealth string // "", "starting", "healthy", "unhealthy"
 	Created      time.Time
 	Started      time.Time // last start; zero if never started or unparsable
@@ -29,4 +30,8 @@ type Engine interface {
 	Exec(ctx context.Context, id string, env []string, cmd ...string) (string, error)   // stdout; non-zero exit → error with stderr
 	Wait(ctx context.Context, project string, d time.Duration)                          // returns on the project's next container event or after d
 	Image(ctx context.Context, ref string) (id string, repoDigests []string, err error) // the local image's ID and registry digests
+	// ImageManifests is the digests of the image's platform manifests (not
+	// its attestations), as a replica's Manifest; none without the containerd
+	// image store.
+	ImageManifests(ctx context.Context, ref string) ([]string, error)
 }

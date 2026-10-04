@@ -10,6 +10,7 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/cuza/docker-bouncer/internal/transform"
 	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
 )
 
@@ -39,6 +40,9 @@ func (d *docker) list(ctx context.Context, project string, labels map[string]str
 		r := Replica{ID: c.ID, Name: trimSlash(c.Name), Running: c.State != nil && c.State.Running, Labels: c.Config.Labels}
 		if c.State != nil && c.State.Health != nil {
 			r.DockerHealth = string(c.State.Health.Status)
+		}
+		if c.ImageManifestDescriptor != nil {
+			r.Manifest = c.ImageManifestDescriptor.Digest.String()
 		}
 		r.Created, _ = time.Parse(time.RFC3339Nano, c.Created)
 		if c.State != nil {
@@ -107,6 +111,20 @@ func (d *docker) Logs(ctx context.Context, id string, tail int) (string, error) 
 func (d *docker) Image(ctx context.Context, ref string) (string, []string, error) {
 	res, err := d.c.ImageInspect(ctx, ref)
 	return res.ID, res.RepoDigests, err
+}
+
+func (d *docker) ImageManifests(ctx context.Context, ref string) ([]string, error) {
+	res, err := d.c.ImageInspect(ctx, ref, client.ImageInspectWithManifests(true))
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, m := range res.Manifests {
+		if m.Kind == image.ManifestKindImage {
+			out = append(out, m.ID)
+		}
+	}
+	return out, nil
 }
 
 func (d *docker) Exec(ctx context.Context, id string, env []string, cmd ...string) (string, error) {

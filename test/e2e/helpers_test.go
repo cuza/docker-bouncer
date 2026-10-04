@@ -22,7 +22,8 @@ import (
 var projectSeq atomic.Int64
 
 // buildx is the user's buildx plugin, or "". The private config leaves it
-// out: BuildKit's attestations make every build a new image ID.
+// out, so builds use the classic builder; tests that need BuildKit opt in
+// with withBuildx.
 var buildx string
 
 // TestMain builds the test app images and the plugin into a private

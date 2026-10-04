@@ -22,12 +22,13 @@ import (
 )
 
 type fakeEngine struct {
-	reps    []engine.Replica
-	id      string          // Image's ID; "sha256:<ref>" when empty
-	digests []string        // Image's repo digests
-	hook    *engine.Replica // what Container returns
-	kept    []string        // RemoveKeepVolumes calls
-	logs    string
+	reps      []engine.Replica
+	id        string          // Image's ID; "sha256:<ref>" when empty
+	digests   []string        // Image's repo digests
+	manifests []string        // ImageManifests
+	hook      *engine.Replica // what Container returns
+	kept      []string        // RemoveKeepVolumes calls
+	logs      string
 }
 
 func (f *fakeEngine) Replicas(context.Context, string, string) ([]engine.Replica, error) {
@@ -48,6 +49,9 @@ func (f *fakeEngine) Exec(context.Context, string, []string, ...string) (string,
 	return "", nil
 }
 func (f *fakeEngine) Wait(context.Context, string, time.Duration) {}
+func (f *fakeEngine) ImageManifests(context.Context, string) ([]string, error) {
+	return f.manifests, nil
+}
 func (f *fakeEngine) Image(_ context.Context, ref string) (string, []string, error) {
 	if f.id != "" {
 		return f.id, f.digests, nil
@@ -155,6 +159,15 @@ func TestDesiredAppBouncesOnlyOnNewImage(t *testing.T) {
 			}
 			up("u1", "1")
 			up("u2", "1") // same image
+			// A BuildKit rebuild: a new ID with the same image manifest.
+			if name == "built" {
+				fe.reps[0].Manifest = "sha256:m1"
+				fe.id, fe.manifests = "sha256:rebuilt", []string{"sha256:m1"}
+				if app := up("u2b", "1"); app.Labels[labelImage] != "sha256:old" {
+					t.Fatalf("an unchanged rebuild must keep the running pin, got %q", app.Labels[labelImage])
+				}
+				fe.manifests = []string{"sha256:m2"}
+			}
 			fe.id, fe.digests = "sha256:new", []string{"registry/api@" + d2}
 			if app := up("u3", "2"); name == "built" && app.Labels[labelImage] != "sha256:new" {
 				t.Fatalf("rebuilt image %q", app.Labels[labelImage])

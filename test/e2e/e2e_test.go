@@ -964,19 +964,7 @@ services:
     ports: ["127.0.0.1:%[1]d:8080"]
     x-bouncer: { %[2]s }
 `, port, fast))
-	if buildx == "" {
-		t.Skip("additional_contexts need BuildKit, which Compose uses only through the buildx plugin")
-	}
-	cfg := filepath.Join(t.TempDir(), "cli-plugins")
-	if err := os.MkdirAll(cfg, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, target := range map[string]string{"docker-buildx": buildx, "docker-bouncer": filepath.Join(os.Getenv("DOCKER_CONFIG"), "cli-plugins", "docker-bouncer")} {
-		if err := os.Symlink(target, filepath.Join(cfg, name)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("DOCKER_CONFIG", filepath.Dir(cfg))
+	withBuildx(t, "additional_contexts need BuildKit, which Compose uses only through the buildx plugin")
 	for dir, body := range map[string]string{
 		"base": "FROM bouncer-e2e-app:v1\nLABEL " + label + "\nENV VERSION=from-base\n",
 		"api":  "FROM base\nLABEL " + label + "\n",
@@ -989,6 +977,55 @@ services:
 	p.mustUp()
 	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "from-base") {
 		t.Fatalf("GET / = %q, want the app built from base's image", body)
+	}
+}
+
+// withBuildx switches the test to a private config holding the user's buildx
+// plugin too, so Compose builds with BuildKit; it skips the test without one.
+func withBuildx(t *testing.T, why string) {
+	t.Helper()
+	if buildx == "" {
+		t.Skip(why)
+	}
+	cfg := filepath.Join(t.TempDir(), "cli-plugins")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"docker-buildx": buildx, "docker-bouncer": filepath.Join(os.Getenv("DOCKER_CONFIG"), "cli-plugins", "docker-bouncer")} {
+		if err := os.Symlink(target, filepath.Join(cfg, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("DOCKER_CONFIG", filepath.Dir(cfg))
+}
+
+// With BuildKit a rebuild of unchanged sources is a new image ID (its
+// attestations differ), yet the same image: no bounce. A change still bounces.
+func TestBuildxUnchangedRebuildIsNoop(t *testing.T) {
+	label := pruneBuilt(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    build: ./ctx
+    expose: ["8080"]
+    x-bouncer: { %s, drain_method_params: { delay: 1s } }
+`, fast))
+	withBuildx(t, "BuildKit builds go through the buildx plugin")
+	dockerfile := filepath.Join(p.dir, "ctx", "Dockerfile")
+	if err := os.MkdirAll(filepath.Dir(dockerfile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=one\n")
+	p.mustUp()
+	before := p.replicas("api")
+	p.mustUp()
+	if h := p.history("api"); len(h) != 1 || !slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("an unchanged rebuild bounced: history %q", h)
+	}
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=two\n")
+	p.mustUp()
+	if h := p.history("api"); len(h) != 2 || slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("a changed build must bounce: history %q", h)
 	}
 }
 
