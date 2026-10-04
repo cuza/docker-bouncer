@@ -217,7 +217,7 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 	}
 
 	ports := parsePorts(svc, bad)
-	if len(ports) == 0 {
+	if len(svc.Ports) == 0 && len(svc.Expose) == 0 { // a rejected port is reported as such
 		bad("a bouncer service needs ports: or expose:")
 	}
 	admin := 0

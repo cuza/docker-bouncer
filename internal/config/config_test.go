@@ -130,6 +130,19 @@ func TestExposeAcceptsProtocolSuffixAndRejectsRanges(t *testing.T) {
 	}
 }
 
+// A rejected port is the only problem reported: the service has ports.
+func TestRejectedPortIsTheOnlyProblem(t *testing.T) {
+	for _, s := range []types.ServiceConfig{
+		svc(map[string]any{}, nil, "8000-8002"),
+		svc(map[string]any{}, []types.ServicePortConfig{{Target: 80, Protocol: "udp"}}),
+	} {
+		_, err := Parse(s)
+		if err == nil || len(err.(*Error).Problems) != 1 {
+			t.Fatalf("want one problem, got %v", err)
+		}
+	}
+}
+
 func TestHTTPDrainNeedsIsSafeToKill(t *testing.T) {
 	_, err := Parse(svc(map[string]any{"drain_method": "http",
 		"drain_method_params": map[string]any{"drain": map[string]any{"path": "/drain"}}}, nil, "8080"))
