@@ -240,6 +240,9 @@ func refreshProject(ctx context.Context, dockerCli command.Cli, ev api.EventProc
 	if err != nil {
 		return fail(err)
 	}
+	if got := l.Derived.Project.Name; got != name { // never lock, pull or bounce another project
+		return fail(Exit(1, fmt.Errorf("the recorded invocation loads project %s, not %s; run docker bouncer up for %s once", got, name, name)))
+	}
 	if vars := shellVars(inv); len(vars) > 0 {
 		say(api.Warning, "Not set in the env files: "+strings.Join(vars, ", ")+";",
 			"values from the shell at the last up are not replayed; put them in an env file")

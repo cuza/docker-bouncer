@@ -3,6 +3,9 @@
 package e2e
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -288,5 +291,27 @@ services:
 	}
 	if n := len(p.replicas("api")); n != 2 {
 		t.Fatalf("%d replicas after refresh, want 2", n)
+	}
+}
+
+// A replica whose invocation loads another project fails its project
+// before anything is locked, pulled or bounced.
+func TestRefreshInvocationOfAnotherProject(t *testing.T) {
+	other := project(t, api(freePort(t), 1, fast))
+	p := project(t, api(freePort(t), 1, fast))
+	j, _ := json.Marshal(map[string]any{"version": "dev", "command": "up", "files": []string{filepath.Join(other.dir, "compose.yaml")}, "dir": other.dir, "name": other.name})
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Write(j)
+	zw.Close()
+	docker(t, "run", "-d", "--label", "com.docker.compose.project="+p.name, "--label", "dev.cuza.bouncer.role=replica",
+		"--label", "dev.cuza.bouncer.service=api", "--label", "dev.cuza.bouncer.up-id=20260101T000000Z",
+		"--label", "dev.cuza.bouncer.invocation="+base64.StdEncoding.EncodeToString(buf.Bytes()), "bouncer-e2e-app:v1")
+	out, code := p.refresh("", "--pull", "never")
+	if code != 1 || !strings.Contains(out, "the recorded invocation loads project "+other.name+", not "+p.name) || strings.Contains(out, "Lock") {
+		t.Fatalf("refresh: %d\n%s", code, out)
+	}
+	if ids := other.containers("com.docker.compose.project=" + other.name); len(ids) != 0 {
+		t.Fatalf("refresh touched the other project: %v", ids)
 	}
 }
