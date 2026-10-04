@@ -139,7 +139,7 @@ func restore(l *loaded, svc config.Service, e revision.Entry) (types.ServiceConf
 // fileRevision is the newest stored revision the compose file describes; the
 // current one when the file matches none.
 func fileRevision(ctx context.Context, l *loaded, svc config.Service, h []revision.Entry) int {
-	app, err := pinBuilt(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
+	app, err := pinImage(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
 	if err != nil {
 		return h[0].Revision
 	}

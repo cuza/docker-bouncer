@@ -17,6 +17,7 @@ import (
 	"github.com/cuza/docker-bouncer/internal/lock"
 	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/cuza/docker-bouncer/internal/transform"
+	"github.com/distribution/reference"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
@@ -209,7 +210,7 @@ func current(ctx context.Context, l *loaded, svc string) (map[string]string, err
 // desiredApp: the file's replica config, stamped as a new revision only when
 // it differs from what runs.
 func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string) (types.ServiceConfig, error) {
-	app, err := pinBuilt(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
+	app, err := pinImage(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
 	if err != nil {
 		return app, err
 	}
@@ -333,19 +334,44 @@ func build(ctx context.Context, l *loaded, sel *types.Project, pull bool) error 
 	return l.Compose.Build(ctx, sel, api.BuildOptions{Services: names, Pull: pull})
 }
 
-// pinBuilt points a built replica service at the image ID its build made, so
-// a rebuilt image is a new spec hash (a bounce) and undo restores that exact
-// image, as Compose's image-digest label marks a container outdated.
-func pinBuilt(ctx context.Context, l *loaded, app types.ServiceConfig) (types.ServiceConfig, error) {
-	if app.Build == nil {
+// pinImage points a replica service at the exact image it runs, so a new
+// image under the same tag (a rebuild, or a pull of :latest) is a new spec
+// hash, a bounce, and undo restores that exact image, as Compose's
+// image-digest label marks a container outdated. An image with a digest for
+// its repository becomes tag@digest, which undo can pull again when it came
+// from a registry; a built image, or a local one without a digest, its image
+// ID. A reference that already carries a digest is exact as written.
+func pinImage(ctx context.Context, l *loaded, app types.ServiceConfig) (types.ServiceConfig, error) {
+	if app.Build == nil && strings.Contains(app.Image, "@") {
 		return app, nil
 	}
-	id, err := l.Engine.ImageID(ctx, app.Image)
+	id, digests, err := l.Engine.Image(ctx, app.Image)
 	if err != nil {
 		return app, fmt.Errorf("%s: %w", app.Name, err)
 	}
-	app.Image = id
+	if d := repoDigest(app.Image, digests); app.Build == nil && d != "" {
+		app.Image += "@" + d
+	} else {
+		app.Image = id
+	}
 	return app, nil
+}
+
+// repoDigest is the digest under which ref's repository holds the image, or
+// "" when that registry never served it (built or only tagged locally).
+func repoDigest(ref string, repoDigests []string) string {
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return ""
+	}
+	for _, rd := range repoDigests {
+		if c, err := reference.ParseNormalizedNamed(rd); err == nil && c.Name() == named.Name() {
+			if d, ok := c.(reference.Digested); ok {
+				return d.Digest().String()
+			}
+		}
+	}
+	return ""
 }
 
 func imagePresent(dockerCli command.Cli) func(context.Context, string) bool {

@@ -117,7 +117,7 @@ func (w *world) Remove(_ context.Context, id string) error {
 	return nil
 }
 func (w *world) Exec(context.Context, string, []string, ...string) (string, error) { return "", nil }
-func (w *world) ImageID(context.Context, string) (string, error)                   { return "", nil }
+func (w *world) Image(context.Context, string) (string, []string, error)           { return "", nil, nil }
 func (w *world) Wait(context.Context, string, time.Duration)                       { w.now = w.now.Add(5 * time.Second) }
 
 // engine.Proxy: only listed hosts appear, healthy if running (new ones only when newHealthy).

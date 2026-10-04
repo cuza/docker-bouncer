@@ -37,11 +37,13 @@ services:
 
 func url(port int, path string) string { return fmt.Sprintf("http://127.0.0.1:%d%s", port, path) }
 
-// images maps each replica's image to its count.
+// images maps each replica's image, without the @digest it is pinned to, to
+// its count.
 func (p *proj) images(svc string) map[string]int {
 	out := map[string]int{}
 	for _, id := range p.replicas(svc) {
-		out[docker(p.t, "inspect", "-f", "{{.Config.Image}}", id)]++
+		img, _, _ := strings.Cut(docker(p.t, "inspect", "-f", "{{.Config.Image}}", id), "@")
+		out[img]++
 	}
 	return out
 }
@@ -510,9 +512,34 @@ func TestUndoAndUndoOfUndo(t *testing.T) {
 			t.Fatalf("after undo %d GET / = %q, want %s", i+1, body, want)
 		}
 		top := strings.Fields(p.history("api")[0])
-		if rev := fmt.Sprint(3 + i); top[0] != rev || top[1] != "*" || top[3] != "bouncer-e2e-app:"+want {
+		if rev := fmt.Sprint(3 + i); top[0] != rev || top[1] != "*" || !strings.HasPrefix(top[3], "bouncer-e2e-app:"+want) {
 			t.Fatalf("after undo %d history top %q, want revision %s of %s", i+1, top, rev, want)
 		}
+	}
+}
+
+// The cron case: the file is unchanged but its tag now names another image.
+// up bounces to it, and undo brings back the old one by its digest.
+func TestMovedTagBounces(t *testing.T) {
+	port := freePort(t)
+	tag := fmt.Sprintf("bouncer-e2e-app:moving-%d", port)
+	docker(t, "tag", "bouncer-e2e-app:v1", tag)
+	t.Cleanup(func() { exec.Command("docker", "rmi", tag).Run() })
+	p := project(t, strings.Replace(api(port, 1, fast+`, drain_method_params: { delay: 1s }`), "bouncer-e2e-app:v1", tag, 1))
+	p.mustUp()
+	docker(t, "tag", "bouncer-e2e-app:v2", tag)
+	p.mustUp()
+	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "v2") {
+		t.Fatalf("after the tag moved GET / = %q, want v2", body)
+	}
+	if h := p.history("api"); len(h) != 2 {
+		t.Fatalf("a moved tag is a new revision: %q", h)
+	}
+	if out, code := p.bouncer("undo"); code != 0 {
+		t.Fatalf("undo: %d\n%s", code, out)
+	}
+	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "v1") {
+		t.Fatalf("after undo GET / = %q, want v1", body)
 	}
 }
 

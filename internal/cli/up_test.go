@@ -21,8 +21,9 @@ import (
 )
 
 type fakeEngine struct {
-	reps []engine.Replica
-	id   string // ImageID's answer; "sha256:<ref>" when empty
+	reps    []engine.Replica
+	id      string   // Image's ID; "sha256:<ref>" when empty
+	digests []string // Image's repo digests
 }
 
 func (f *fakeEngine) Replicas(context.Context, string, string) ([]engine.Replica, error) {
@@ -37,11 +38,11 @@ func (f *fakeEngine) Exec(context.Context, string, []string, ...string) (string,
 	return "", nil
 }
 func (f *fakeEngine) Wait(context.Context, string, time.Duration) {}
-func (f *fakeEngine) ImageID(_ context.Context, ref string) (string, error) {
+func (f *fakeEngine) Image(_ context.Context, ref string) (string, []string, error) {
 	if f.id != "" {
-		return f.id, nil
+		return f.id, f.digests, nil
 	}
-	return "sha256:" + ref, nil
+	return "sha256:" + ref, f.digests, nil
 }
 
 func fakeLoaded(t *testing.T) *loaded {
@@ -90,6 +91,37 @@ func TestDesiredAppPinsBuiltImage(t *testing.T) {
 	l.Engine.(*fakeEngine).id = "sha256:rebuilt"
 	if next, _ := desiredApp(context.Background(), l, l.Derived.Services[0], "u3"); next.Labels[revision.LabelRevision] != "2" || next.Image != "sha256:rebuilt" {
 		t.Fatalf("a rebuilt image is a new revision: %v %q", next.Labels[revision.LabelRevision], next.Image)
+	}
+}
+
+// A pulled tag runs as tag@digest, so a new image under :latest is a new
+// revision that undo can pull again; a digest in the file is kept as written.
+func TestDesiredAppPinsPulledImage(t *testing.T) {
+	const d1, d2 = "sha256:1111111111111111111111111111111111111111111111111111111111111111", "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	l := derive(t, service("api", "vaultwarden/server:latest", "", true))
+	fe := &fakeEngine{digests: []string{"other/mirror@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "vaultwarden/server@" + d1}}
+	l.Engine = fe
+	app, err := desiredApp(context.Background(), l, l.Derived.Services[0], "u1")
+	if err != nil || app.Image != "vaultwarden/server:latest@"+d1 {
+		t.Fatalf("image %q %v", app.Image, err)
+	}
+	fe.reps = []engine.Replica{{Name: "proj-api-app-1", Running: true, Labels: app.Labels}}
+	if again, _ := desiredApp(context.Background(), l, l.Derived.Services[0], "u2"); again.Labels[revision.LabelRevision] != "1" {
+		t.Fatal("the same digest is the same revision")
+	}
+	fe.digests = []string{"docker.io/vaultwarden/server@" + d2}
+	if next, _ := desiredApp(context.Background(), l, l.Derived.Services[0], "u3"); next.Labels[revision.LabelRevision] != "2" || next.Image != "vaultwarden/server:latest@"+d2 {
+		t.Fatalf("a new image under the tag is a new revision: %v %q", next.Labels[revision.LabelRevision], next.Image)
+	}
+
+	fe.digests = nil // only tagged locally: nothing to pull, pin the ID
+	if app, _ := pinImage(context.Background(), l, l.Derived.Project.Services["api-app"]); app.Image != "sha256:vaultwarden/server:latest" {
+		t.Fatalf("local-only image %q", app.Image)
+	}
+	pinned := l.Derived.Project.Services["api-app"]
+	pinned.Image = "registry:3.1.1@sha256:1be5"
+	if app, _ := pinImage(context.Background(), l, pinned); app.Image != pinned.Image {
+		t.Fatalf("a digest in the file must stay as written: %q", app.Image)
 	}
 }
 

@@ -27,7 +27,7 @@ func psCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				if !ok {
 					app = l.Derived.Project.DisabledServices[transform.AppName(s.Name)]
 				}
-				if pinned, err := pinBuilt(ctx, l, app); err == nil {
+				if pinned, err := pinImage(ctx, l, app); err == nil {
 					app = pinned
 				}
 				_, h, _ := revision.Encode(app)

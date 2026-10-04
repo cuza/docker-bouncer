@@ -78,9 +78,9 @@ func (d *docker) Remove(ctx context.Context, id string) error {
 	return err
 }
 
-func (d *docker) ImageID(ctx context.Context, ref string) (string, error) {
+func (d *docker) Image(ctx context.Context, ref string) (string, []string, error) {
 	res, err := d.c.ImageInspect(ctx, ref)
-	return res.ID, err
+	return res.ID, res.RepoDigests, err
 }
 
 func (d *docker) Exec(ctx context.Context, id string, env []string, cmd ...string) (string, error) {
