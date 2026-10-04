@@ -218,7 +218,7 @@ func (c composeScaler) preStart(ctx context.Context, p *types.Project, app types
 func (c composeScaler) runHook(ctx context.Context, p *types.Project, app types.ServiceConfig, i int, target string) error {
 	cleanup := context.WithoutCancel(ctx)
 	labels := map[string]string{api.ServiceLabel: app.Name, api.HookLabel: "pre_start", api.HookIndexLabel: strconv.Itoa(i)}
-	if old, err := c.l.Engine.Container(ctx, p.Name, labels); err != nil {
+	if old, err := c.l.Engine.Container(cleanup, p.Name, labels); err != nil {
 		return err
 	} else if old != nil { // left by a killed run
 		if err := c.l.Engine.RemoveKeepVolumes(cleanup, old.ID); err != nil {
@@ -241,19 +241,24 @@ func (c composeScaler) runHook(ctx context.Context, p *types.Project, app types.
 	hp := *p
 	hp.Services = maps.Clone(p.Services)
 	hp.Services[h.Name] = h
-	if err := c.compose(func() error {
+	created := c.compose(func() error {
 		return c.l.Compose.Create(ctx, &hp, api.CreateOptions{Services: []string{h.Name}, Recreate: api.RecreateNever, RecreateDependencies: api.RecreateNever})
-	}); err != nil {
-		return err
-	}
+	})
+	// Look it up even when Create failed: a cancelled Create may have
+	// created it already.
 	run, err := c.l.Engine.Container(cleanup, p.Name, labels)
+	if run != nil {
+		defer c.l.Engine.RemoveKeepVolumes(cleanup, run.ID)
+	}
+	if created != nil {
+		return created
+	}
 	if err == nil && run == nil {
 		err = fmt.Errorf("its container was not created")
 	}
 	if err != nil {
 		return err
 	}
-	defer c.l.Engine.RemoveKeepVolumes(cleanup, run.ID)
 	if err := c.l.Engine.Start(ctx, run.ID); err != nil {
 		return err
 	}

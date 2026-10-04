@@ -35,8 +35,8 @@ type fakeEngine struct {
 func (f *fakeEngine) Replicas(context.Context, string, string) ([]engine.Replica, error) {
 	return f.reps, nil
 }
-func (f *fakeEngine) Container(context.Context, string, map[string]string) (*engine.Replica, error) {
-	return f.hook, nil
+func (f *fakeEngine) Container(ctx context.Context, _ string, _ map[string]string) (*engine.Replica, error) {
+	return f.hook, ctx.Err()
 }
 func (f *fakeEngine) RemoveKeepVolumes(_ context.Context, id string) error {
 	f.kept = append(f.kept, id)
@@ -332,7 +332,9 @@ func TestScaleToZeroWarns(t *testing.T) {
 }
 
 // A pre_start hook's container is removed, its volumes kept, whether it
-// fails (its exit code and output are reported) or the run is cancelled.
+// fails (its exit code and output are reported) or the run is cancelled,
+// even while Compose creates it. The fake finds the same container as a
+// leftover of an earlier run first, so both removals count.
 func TestPreStartHookIsAlwaysRemoved(t *testing.T) {
 	for name, tc := range map[string]struct {
 		running bool
@@ -363,7 +365,7 @@ func TestPreStartHookIsAlwaysRemoved(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
-			if !slices.Contains(fe.kept, "hook") {
+			if !slices.Equal(fe.kept, []string{"hook", "hook"}) {
 				t.Fatalf("hook container not removed (keeping volumes): %v", fe.kept)
 			}
 		})

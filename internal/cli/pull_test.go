@@ -38,7 +38,9 @@ func (f *fakeCompose) Pull(_ context.Context, p *types.Project, _ api.PullOption
 	return nil
 }
 
-func (f *fakeCompose) Create(context.Context, *types.Project, api.CreateOptions) error { return nil }
+func (f *fakeCompose) Create(ctx context.Context, _ *types.Project, _ api.CreateOptions) error {
+	return ctx.Err()
+}
 
 // Up runs the project's providers as Compose does: it injects URL into
 // their dependents' environment.
