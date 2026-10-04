@@ -21,6 +21,6 @@ func pullCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				}
 				l.Derived.Project = p
 			}
-			return Exit(2, prePull(cmd.Context(), l, l.Derived.Project.Services, types.PullPolicyAlways, imagePresent(dockerCli)))
+			return Exit(2, prePull(cmd.Context(), l, l.Derived.Project.Services, types.PullPolicyAlways, false, imagePresent(dockerCli)))
 		}}
 }

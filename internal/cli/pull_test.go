@@ -18,11 +18,12 @@ type fakeCompose struct {
 	pulled map[string]string // service -> pull_policy
 	ups    int
 	built  []string
-	pull   bool // BuildOptions.Pull of the last Build
+	pull   bool           // BuildOptions.Pull of the last Build
+	bp     *types.Project // the project of the last Build
 }
 
-func (f *fakeCompose) Build(_ context.Context, _ *types.Project, o api.BuildOptions) error {
-	f.built, f.pull = o.Services, o.Pull
+func (f *fakeCompose) Build(_ context.Context, p *types.Project, o api.BuildOptions) error {
+	f.built, f.pull, f.bp = o.Services, o.Pull, p
 	slices.Sort(f.built)
 	return nil
 }
@@ -77,7 +78,7 @@ func TestPrePullSelection(t *testing.T) {
 		service("tool", "registry/tool:1", types.PullPolicyNever, false), // absent but never
 	)
 	have := present(config.DefaultProxyImage, "registry/db:1", "registry/cache:1")
-	if err := prePull(context.Background(), l, l.Derived.Project.Services, "", have); err != nil {
+	if err := prePull(context.Background(), l, l.Derived.Project.Services, "", true, have); err != nil {
 		t.Fatal(err)
 	}
 	f := l.Compose.(*fakeCompose)
@@ -90,14 +91,14 @@ func TestPrePullSelection(t *testing.T) {
 	}
 
 	f.pulled = nil
-	if err := prePull(context.Background(), l, l.Derived.Project.Services, types.PullPolicyNever, present()); err != nil || f.pulled != nil {
+	if err := prePull(context.Background(), l, l.Derived.Project.Services, types.PullPolicyNever, true, present()); err != nil || f.pulled != nil {
 		t.Fatalf("--pull never pulled %v (%v)", f.pulled, err)
 	}
 }
 
 func TestPrePullLockImageWithoutServices(t *testing.T) {
 	l := derive(t, service("db", "registry/db:1", "", false))
-	if err := prePull(context.Background(), l, l.Derived.Project.Services, "", present("registry/db:1")); err != nil {
+	if err := prePull(context.Background(), l, l.Derived.Project.Services, "", true, present("registry/db:1")); err != nil {
 		t.Fatal(err)
 	}
 	if f := l.Compose.(*fakeCompose); len(f.pulled) != 1 || f.pulled["bouncer-lock"] != types.PullPolicyAlways {
@@ -105,25 +106,52 @@ func TestPrePullLockImageWithoutServices(t *testing.T) {
 	}
 }
 
-// Services with build: are built, never pulled; --pull always pulls their base images.
+// up builds every service with build: and pulls none of them (--pull always
+// pulls their base images); pull pulls one only when it has an image:, as
+// docker compose pull. build builds the user's services, not the proxies
+// named after them.
 func TestBuildServices(t *testing.T) {
 	built := service("api", "", "", true)
 	built.Build = &types.BuildConfig{Context: "."}
 	tool := service("tool", "", "", false)
 	tool.Build = &types.BuildConfig{Context: "."}
-	l := derive(t, built, tool, service("db", "registry/db:1", "", false))
-	if err := prePull(context.Background(), l, l.Derived.Project.Services, types.PullPolicyAlways, present()); err != nil {
-		t.Fatal(err)
-	}
+	pushed := service("web", "registry/web:1", "", true)
+	pushed.Build = &types.BuildConfig{Context: "."}
+	l := derive(t, built, tool, pushed, service("db", "registry/db:1", "", false))
 	f := l.Compose.(*fakeCompose)
-	if _, ok := f.pulled["api-app"]; ok || f.pulled["db"] == "" {
-		t.Fatalf("pulled %v", f.pulled)
+	pulled := func(skipBuilt bool) []string {
+		t.Helper()
+		if err := prePull(context.Background(), l, l.Derived.Project.Services, types.PullPolicyAlways, skipBuilt, present()); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for n := range f.pulled {
+			out = append(out, n)
+		}
+		slices.Sort(out)
+		return out
 	}
+	if got := pulled(true); !slices.Equal(got, []string{"api", "db", "web"}) { // the proxies, db; the lock shares the proxy image
+		t.Fatalf("up pulled %v", got)
+	}
+	if got := pulled(false); !slices.Equal(got, []string{"api", "db", "web", "web-app"}) {
+		t.Fatalf("pull pulled %v, want web-app (it has image:) but not api-app or tool", got)
+	}
+
 	if err := build(context.Background(), l, l.Derived.Project, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(f.built, []string{"api-app", "tool"}) || !f.pull {
+	if !slices.Equal(f.built, []string{"api", "tool", "web"}) || !f.pull {
 		t.Fatalf("built %v pull %v", f.built, f.pull)
+	}
+	if s := f.bp.Services["api"]; s.Build == nil || s.Image != "" {
+		t.Fatalf("build must see the user's api, not its proxy: %+v", s)
+	}
+	if f.bp == l.Project {
+		t.Fatal("build must hand Compose a copy of the user's project")
+	}
+	if l.Derived.Project.Services["api-app"].Image != "proj-api" || l.Derived.Project.Services["web-app"].Image != "registry/web:1" {
+		t.Fatal("the replicas must run the image Compose builds: <project>-<service>, or image:")
 	}
 }
 

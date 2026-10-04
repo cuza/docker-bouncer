@@ -77,7 +77,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if len(plans) == 0 {
 				return Exit(1, fmt.Errorf("nothing to undo"))
 			}
-			if err := prePull(ctx, l, pulls, "", imagePresent(dockerCli)); err != nil {
+			if err := prePull(ctx, l, pulls, "", true, imagePresent(dockerCli)); err != nil {
 				return Exit(2, err)
 			}
 			return withLock(ctx, dockerCli, l, false, func() error {

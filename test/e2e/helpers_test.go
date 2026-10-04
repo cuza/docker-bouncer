@@ -21,6 +21,10 @@ import (
 
 var projectSeq atomic.Int64
 
+// buildx is the user's buildx plugin, or "". The private config leaves it
+// out: BuildKit's attestations make every build a new image ID.
+var buildx string
+
 // TestMain builds the test app images and the plugin into a private
 // DOCKER_CONFIG, so `docker bouncer` runs this tree's code and the user's
 // ~/.docker is never touched.
@@ -66,6 +70,8 @@ func setup() error {
 			return err
 		}
 	}
+	out, _ := exec.Command("docker", "info", "--format", `{{range .ClientInfo.Plugins}}{{if eq .Name "buildx"}}{{.Path}}{{end}}{{end}}`).Output()
+	buildx = strings.TrimSpace(string(out))
 	build := exec.Command("go", "build", "-o", filepath.Join(dir, "cli-plugins", "docker-bouncer"), ".")
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {

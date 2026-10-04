@@ -853,6 +853,7 @@ services:
 // Dockerfile is a new image and so a bounce, without a failed request.
 func TestBuildService(t *testing.T) {
 	port := freePort(t)
+	label := pruneBuilt(t)
 	p := project(t, fmt.Sprintf(`
 services:
   api:
@@ -861,12 +862,11 @@ services:
     ports: ["127.0.0.1:%d:8080"]
     x-bouncer: { %s, drain_method_params: { delay: 2s } }
 `, port, fast))
-	t.Cleanup(func() { exec.Command("docker", "image", "prune", "-af", "--filter", "label=bouncer-e2e="+p.name).Run() })
 	dockerfile := filepath.Join(p.dir, "ctx", "Dockerfile")
 	if err := os.MkdirAll(filepath.Dir(dockerfile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL bouncer-e2e="+p.name+"\nARG V\nENV VERSION=$V\n")
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nARG V\nENV VERSION=$V\n")
 	p.mustUp()
 	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "one") {
 		t.Fatalf("GET / = %q", body)
@@ -888,7 +888,7 @@ services:
 	}
 	p.write(strings.Replace(p.yaml, "V: one", "V: two", 1))
 	bounce("two")
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL bouncer-e2e="+p.name+"\nENV VERSION=three\n")
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=three\n")
 	bounce("three")
 	if h := p.history("api"); len(h) != 3 {
 		t.Fatalf("history: %q", h)
@@ -900,6 +900,59 @@ services:
 	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nRUN exit 1\n")
 	if out, code := p.bouncer("up"); code != 2 || !slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("a failed build: exit %d, want 2 and no change\n%s", code, out)
+	}
+}
+
+// pruneBuilt returns a LABEL for test Dockerfiles; the images built with it
+// are removed once the test's projects are down (call it before project:
+// cleanups run last-registered first).
+func pruneBuilt(t *testing.T) string {
+	l := fmt.Sprintf("bouncer-e2e-build=%d-%d", os.Getpid(), projectSeq.Add(1))
+	t.Cleanup(func() { exec.Command("docker", "image", "prune", "-af", "--filter", "label="+l).Run() })
+	return l
+}
+
+// A build referring to a Service (additional_contexts: service:S) gets S's
+// built app image, not its proxy.
+func TestBuildContextFromService(t *testing.T) {
+	port := freePort(t)
+	label := pruneBuilt(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  base:
+    build: ./base
+    expose: ["8080"]
+    x-bouncer: { %[2]s }
+  api:
+    build: { context: ./api, additional_contexts: { base: "service:base" } }
+    ports: ["127.0.0.1:%[1]d:8080"]
+    x-bouncer: { %[2]s }
+`, port, fast))
+	if buildx == "" {
+		t.Skip("additional_contexts need BuildKit, which Compose uses only through the buildx plugin")
+	}
+	cfg := filepath.Join(t.TempDir(), "cli-plugins")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"docker-buildx": buildx, "docker-bouncer": filepath.Join(os.Getenv("DOCKER_CONFIG"), "cli-plugins", "docker-bouncer")} {
+		if err := os.Symlink(target, filepath.Join(cfg, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("DOCKER_CONFIG", filepath.Dir(cfg))
+	for dir, body := range map[string]string{
+		"base": "FROM bouncer-e2e-app:v1\nLABEL " + label + "\nENV VERSION=from-base\n",
+		"api":  "FROM base\nLABEL " + label + "\n",
+	} {
+		if err := os.MkdirAll(filepath.Join(p.dir, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(p.dir, dir, "Dockerfile"), body)
+	}
+	p.mustUp()
+	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "from-base") {
+		t.Fatalf("GET / = %q, want the app built from base's image", body)
 	}
 }
 

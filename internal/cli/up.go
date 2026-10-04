@@ -55,15 +55,17 @@ unchanged one is a cached no-op. --no-build skips building.`,
 			if err != nil {
 				return err
 			}
-			if err := prePull(ctx, l, sel.Services, pull, imagePresent(dockerCli)); err != nil {
+			if err := prePull(ctx, l, sel.Services, pull, true, imagePresent(dockerCli)); err != nil {
 				return Exit(2, err)
 			}
-			if !noBuild {
-				if err := build(ctx, l, sel, pull == types.PullPolicyAlways); err != nil {
-					return Exit(2, err)
-				}
-			}
 			return withLock(ctx, dockerCli, l, forceUnlock, func() error {
+				// 0. Build under the lock, so a concurrent up cannot retag the
+				// image before pinBuilt resolves it.
+				if !noBuild {
+					if err := build(ctx, l, sel, pull == types.PullPolicyAlways); err != nil {
+						return Exit(2, err)
+					}
+				}
 				// 1. Plain services and proxies through Compose (normal convergence).
 				if err := upPlainAndProxies(ctx, l, sel); err != nil {
 					return Exit(1, err)
@@ -276,7 +278,11 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 // never everywhere else. Policy: --pull overrides; else the service's
 // pull_policy (default missing; "daily" counts as missing). The lock
 // container's image (the proxy image) is pulled when missing too.
-func prePull(ctx context.Context, l *loaded, svcs types.Services, override string, present func(context.Context, string) bool) error {
+//
+// skipBuilt skips every service with build: (up builds them; undo restores
+// image IDs no registry serves). Otherwise, as docker compose pull, one with
+// build: is pulled only when the user gave it an image:.
+func prePull(ctx context.Context, l *loaded, svcs types.Services, override string, skipBuilt bool, present func(context.Context, string) bool) error {
 	var names []string
 	images := map[string]bool{}
 	for name, svc := range svcs {
@@ -284,8 +290,8 @@ func prePull(ctx context.Context, l *loaded, svcs types.Services, override strin
 		if policy == "" {
 			policy = svc.PullPolicy
 		}
-		if svc.Build != nil { // built instead; --pull always pulls its base images
-			continue
+		if svc.Build != nil && (skipBuilt || l.Project.Services[original(l, name)].Image == "") {
+			continue // built instead; --pull always pulls its base images
 		}
 		switch policy {
 		case types.PullPolicyNever, types.PullPolicyBuild:
@@ -319,18 +325,35 @@ func prePull(ctx context.Context, l *loaded, svcs types.Services, override strin
 
 // build builds every service of sel with build: through Compose, always (a
 // cached build is quick, and an unchanged image ID means no bounce); pull
-// pulls the base images too.
+// pulls the base images too. It builds the user's services, not the derived
+// ones, where a Service's name is its proxy (additional_contexts: service:S
+// must mean S's app); the image, <project>-<S> or image:, is the one the
+// replicas run.
 func build(ctx context.Context, l *loaded, sel *types.Project, pull bool) error {
 	var names []string
 	for name, svc := range sel.Services {
 		if svc.Build != nil {
-			names = append(names, name)
+			names = append(names, original(l, name))
 		}
 	}
 	if len(names) == 0 {
 		return nil
 	}
-	return l.Compose.Build(ctx, sel, api.BuildOptions{Services: names, Pull: pull})
+	p, err := l.Project.WithServicesEnabled(names...) // a copy: Compose writes into it
+	if err != nil {
+		return err
+	}
+	return l.Compose.Build(ctx, p, api.BuildOptions{Services: names, Pull: pull})
+}
+
+// original is the user's service a derived one comes from: S for S-app.
+func original(l *loaded, name string) string {
+	for _, s := range l.Derived.Services {
+		if transform.AppName(s.Name) == name {
+			return s.Name
+		}
+	}
+	return name
 }
 
 // pinBuilt points a built replica service at the image ID its build made, so
