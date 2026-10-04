@@ -36,6 +36,8 @@ func (f *fakeCompose) Pull(_ context.Context, p *types.Project, _ api.PullOption
 	return nil
 }
 
+func (f *fakeCompose) Create(context.Context, *types.Project, api.CreateOptions) error { return nil }
+
 func (f *fakeCompose) Up(context.Context, *types.Project, api.UpOptions) error {
 	f.ups++ // called under loaded.mu
 	return nil

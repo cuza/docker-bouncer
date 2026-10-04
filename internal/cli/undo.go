@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -115,6 +116,12 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 					}
 					app, kept, err := revision.Stamp(p.app, cur, upID, svc.Spec.HistoryMax, time.Now())
 					app.Image = runImage(p.app) // the spec keeps the reference; the replicas run the exact image
+					app.PreStart = slices.Clone(app.PreStart)
+					for i := range app.PreStart {
+						if app.PreStart[i].Image == p.app.Image { // inherited from the service
+							app.PreStart[i].Image = app.Image
+						}
+					}
 					if err == nil {
 						warnTrimmed(l, svc, kept)
 						l.event("Service "+svc.Name, api.Warning, fmt.Sprintf("Revision %s = copy of %d:", app.Labels[revision.LabelRevision], p.target.Revision),

@@ -5,6 +5,7 @@ package transform
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -190,16 +191,12 @@ func replicas(project string, svc types.ServiceConfig) types.ServiceConfig {
 	}
 	app.Ports = nil
 	app.Extensions = nil
-	if svc.Networks != nil {
-		app.Networks = map[string]*types.ServiceNetworkConfig{}
-		for n, cfg := range svc.Networks {
-			if cfg == nil {
-				app.Networks[n] = nil
-				continue
-			}
-			c := *cfg
-			c.Aliases = nil
-			app.Networks[n] = &c
+	// The aliases move to the proxy; pre_start hooks inherited them too.
+	app.Networks = withoutAliases(svc.Networks)
+	if svc.PreStart != nil {
+		app.PreStart = slices.Clone(svc.PreStart)
+		for i := range app.PreStart {
+			app.PreStart[i].Networks = withoutAliases(app.PreStart[i].Networks)
 		}
 	}
 	app.Labels = types.Labels{}
@@ -210,6 +207,22 @@ func replicas(project string, svc types.ServiceConfig) types.ServiceConfig {
 	app.Labels[LabelRole] = RoleReplica
 	app.Labels[LabelService] = svc.Name
 	return app
+}
+
+func withoutAliases(nets map[string]*types.ServiceNetworkConfig) map[string]*types.ServiceNetworkConfig {
+	if nets == nil {
+		return nil
+	}
+	out := map[string]*types.ServiceNetworkConfig{}
+	for n, cfg := range nets {
+		if cfg != nil {
+			c := *cfg
+			c.Aliases = nil
+			cfg = &c
+		}
+		out[n] = cfg
+	}
+	return out
 }
 
 func sortedKeys(s types.Services) []string {

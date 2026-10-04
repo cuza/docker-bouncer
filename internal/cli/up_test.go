@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,18 +23,27 @@ import (
 
 type fakeEngine struct {
 	reps    []engine.Replica
-	id      string   // Image's ID; "sha256:<ref>" when empty
-	digests []string // Image's repo digests
+	id      string          // Image's ID; "sha256:<ref>" when empty
+	digests []string        // Image's repo digests
+	hook    *engine.Replica // what Container returns
+	kept    []string        // RemoveKeepVolumes calls
+	logs    string
 }
 
 func (f *fakeEngine) Replicas(context.Context, string, string) ([]engine.Replica, error) {
 	return f.reps, nil
 }
 func (f *fakeEngine) Container(context.Context, string, map[string]string) (*engine.Replica, error) {
-	return nil, nil
+	return f.hook, nil
 }
-func (f *fakeEngine) Stop(context.Context, string) error   { return nil }
-func (f *fakeEngine) Remove(context.Context, string) error { return nil }
+func (f *fakeEngine) RemoveKeepVolumes(_ context.Context, id string) error {
+	f.kept = append(f.kept, id)
+	return nil
+}
+func (f *fakeEngine) Logs(context.Context, string, int) (string, error) { return f.logs, nil }
+func (f *fakeEngine) Start(context.Context, string) error               { return nil }
+func (f *fakeEngine) Stop(context.Context, string) error                { return nil }
+func (f *fakeEngine) Remove(context.Context, string) error              { return nil }
 func (f *fakeEngine) Exec(context.Context, string, []string, ...string) (string, error) {
 	return "", nil
 }
@@ -268,5 +278,44 @@ func TestDownProject(t *testing.T) {
 	}
 	if len(d.Project.Services) != 1 || len(d.Project.Services["web"].DependsOn) != 0 || d.Project.DisabledServices["api-app"].DependsOn["db"].Condition == "" {
 		t.Fatal("the derived project must not change")
+	}
+}
+
+// A pre_start hook's container is removed, its volumes kept, whether it
+// fails (its exit code and output are reported) or the run is cancelled.
+func TestPreStartHookIsAlwaysRemoved(t *testing.T) {
+	for name, tc := range map[string]struct {
+		running bool
+		cancel  bool
+		want    string
+	}{
+		"fails":     {false, false, "api-app pre_start[0]: exited with 3:\nmigration failed"},
+		"cancelled": {true, true, "context canceled"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := service("api", "registry/api:1", "", true)
+			api.PreStart = []types.PreStartHook{{}}
+			l := derive(t, api)
+			app := l.Derived.Project.Services["api-app"]
+			fe := &fakeEngine{
+				reps: []engine.Replica{{ID: "new", Labels: map[string]string{revision.LabelSpecHash: "h"}}},
+				hook: &engine.Replica{ID: "hook", Running: tc.running, ExitCode: 3},
+				logs: "migration failed\n",
+			}
+			l.Engine = fe
+			app.Labels = types.Labels{revision.LabelSpecHash: "h"}
+			ctx, cancel := context.WithCancel(context.Background())
+			if tc.cancel {
+				cancel()
+			}
+			defer cancel()
+			err := (composeScaler{l: l}).preStart(ctx, l.Derived.Project, app)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+			if !slices.Contains(fe.kept, "hook") {
+				t.Fatalf("hook container not removed (keeping volumes): %v", fe.kept)
+			}
+		})
 	}
 }

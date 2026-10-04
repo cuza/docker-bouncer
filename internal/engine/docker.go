@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/containerd/errdefs"
@@ -41,6 +42,7 @@ func (d *docker) list(ctx context.Context, project string, labels map[string]str
 		}
 		r.Created, _ = time.Parse(time.RFC3339Nano, c.Created)
 		if c.State != nil {
+			r.ExitCode = c.State.ExitCode
 			r.Started, _ = time.Parse(time.RFC3339Nano, c.State.StartedAt) // zero on failure
 		}
 		if c.NetworkSettings != nil {
@@ -67,6 +69,11 @@ func (d *docker) Container(ctx context.Context, project string, labels map[strin
 	return &all[0], nil
 }
 
+func (d *docker) Start(ctx context.Context, id string) error {
+	_, err := d.c.ContainerStart(ctx, id, client.ContainerStartOptions{})
+	return err
+}
+
 func (d *docker) Stop(ctx context.Context, id string) error {
 	_, err := d.c.ContainerStop(ctx, id, client.ContainerStopOptions{})
 	return err
@@ -76,6 +83,22 @@ func (d *docker) Remove(ctx context.Context, id string) error {
 	// Its anonymous volumes go with it; named volumes are never removed here.
 	_, err := d.c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 	return err
+}
+
+func (d *docker) RemoveKeepVolumes(ctx context.Context, id string) error {
+	_, err := d.c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
+	return err
+}
+
+func (d *docker) Logs(ctx context.Context, id string, tail int) (string, error) {
+	rc, err := d.c.ContainerLogs(ctx, id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Tail: strconv.Itoa(tail)})
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	var out bytes.Buffer
+	_, err = stdcopy.StdCopy(&out, &out, rc)
+	return out.String(), err
 }
 
 func (d *docker) Image(ctx context.Context, ref string) (string, []string, error) {

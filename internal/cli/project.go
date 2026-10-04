@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/cuza/docker-bouncer/internal/config"
 	"github.com/cuza/docker-bouncer/internal/engine"
+	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/cuza/docker-bouncer/internal/transform"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v5/pkg/api"
@@ -100,12 +103,159 @@ func (c composeScaler) ScaleUp(ctx context.Context, app types.ServiceConfig, tot
 	app.CustomLabels = p.Services[app.Name].CustomLabels // a restored spec has none
 	app.PullPolicy = types.PullPolicyNever               // prePull is the only pull
 	p.Services[app.Name] = app
+	create := api.CreateOptions{Services: []string{app.Name}, Recreate: api.RecreateNever, RecreateDependencies: api.RecreateNever}
+	start := api.StartOptions{Project: p, Services: []string{app.Name}}
+	hooks, err := c.runsPreStart(ctx, app)
+	if err != nil {
+		return err
+	}
+	if !hooks {
+		return c.compose(func() error { return c.l.Compose.Up(ctx, p, api.UpOptions{Create: create, Start: start}) })
+	}
+	if err := c.compose(func() error { return c.l.Compose.Create(ctx, p, create) }); err != nil {
+		return err
+	}
+	if err := c.preStart(ctx, p, app); err != nil {
+		c.removeCreated(ctx, app)
+		return err
+	}
+	return c.compose(func() error { return c.l.Compose.Start(ctx, p.Name, start) })
+}
+
+// compose makes one Compose call; a hook runs between calls, so other
+// Services' bounces are not held up by it.
+func (c composeScaler) compose(call func() error) error {
 	c.l.mu.Lock()
 	defer c.l.mu.Unlock()
-	return c.l.Compose.Up(ctx, p, api.UpOptions{
-		Create: api.CreateOptions{Services: []string{app.Name}, Recreate: api.RecreateNever, RecreateDependencies: api.RecreateNever},
-		Start:  api.StartOptions{Project: p, Services: []string{app.Name}},
-	})
+	return call()
+}
+
+// runsPreStart: Compose runs pre_start hooks only when no replica of the
+// service runs, as on a recreate; a bounce keeps the old replicas running,
+// so Bouncer runs the hooks itself before the first replica of a new
+// revision starts. With none running, Compose runs them.
+func (c composeScaler) runsPreStart(ctx context.Context, app types.ServiceConfig) (bool, error) {
+	if len(app.PreStart) == 0 {
+		return false, nil
+	}
+	reps, err := c.l.Engine.Replicas(ctx, c.l.Derived.Project.Name, original(c.l, app.Name))
+	if err != nil {
+		return false, err
+	}
+	running := false
+	for _, r := range reps {
+		if r.Labels[revision.LabelSpecHash] == app.Labels[revision.LabelSpecHash] {
+			return false, nil // this revision's hooks already ran
+		}
+		running = running || r.Running
+	}
+	return running, nil
+}
+
+// preStart runs app's pre_start hooks in order, as Compose does: each hook
+// container is the hook's spec (inherited from the service by compose-go)
+// created through Compose, sharing the volumes of the first new replica and
+// labelled as Compose's own hook containers. A hook that exits non-zero
+// stops the bounce with its exit code and output.
+func (c composeScaler) preStart(ctx context.Context, p *types.Project, app types.ServiceConfig) error {
+	reps, err := c.l.Engine.Replicas(ctx, p.Name, original(c.l, app.Name))
+	if err != nil {
+		return err
+	}
+	// The lowest-numbered new replica, as Compose picks.
+	var target *engine.Replica
+	num := func(r *engine.Replica) int { n, _ := strconv.Atoi(r.Labels[api.ContainerNumberLabel]); return n }
+	for i, r := range reps {
+		if r.Labels[revision.LabelSpecHash] == app.Labels[revision.LabelSpecHash] && !r.Running &&
+			(target == nil || num(&reps[i]) < num(target)) {
+			target = &reps[i]
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("%s: no new replica for the pre_start hooks", app.Name)
+	}
+	for i := range app.PreStart {
+		if err := c.runHook(ctx, p, app, i, target.ID); err != nil {
+			return fmt.Errorf("%s pre_start[%d]: %w", app.Name, i, err)
+		}
+	}
+	return nil
+}
+
+// runHook creates, runs and always removes one hook container (keeping the
+// volumes it shares with the replica), even when ctx is cancelled.
+func (c composeScaler) runHook(ctx context.Context, p *types.Project, app types.ServiceConfig, i int, target string) error {
+	cleanup := context.WithoutCancel(ctx)
+	labels := map[string]string{api.ServiceLabel: app.Name, api.HookLabel: "pre_start", api.HookIndexLabel: strconv.Itoa(i)}
+	if old, err := c.l.Engine.Container(ctx, p.Name, labels); err != nil {
+		return err
+	} else if old != nil { // left by a killed run
+		if err := c.l.Engine.RemoveKeepVolumes(cleanup, old.ID); err != nil {
+			return err
+		}
+	}
+	h := types.ServiceConfig{Name: fmt.Sprintf("%s-pre_start-%d", app.Name, i), ContainerSpec: app.PreStart[i].ContainerSpec}
+	h.ContainerName = p.Name + api.Separator + h.Name // Compose's name for it
+	if h.Image == "" {
+		h.Image = app.Image
+	}
+	h.PullPolicy = types.PullPolicyNever
+	h.VolumesFrom = append(slices.Clone(h.VolumesFrom), "container:"+target)
+	h.CustomLabels = types.Labels{}
+	maps.Copy(h.CustomLabels, p.Services[app.Name].CustomLabels)
+	maps.Copy(h.CustomLabels, labels)
+	// Compose creates it: its own create path, as for its hook containers.
+	// It carries the replicas' service label, so Compose would not start
+	// it as h; Bouncer does.
+	hp := *p
+	hp.Services = maps.Clone(p.Services)
+	hp.Services[h.Name] = h
+	if err := c.compose(func() error {
+		return c.l.Compose.Create(ctx, &hp, api.CreateOptions{Services: []string{h.Name}, Recreate: api.RecreateNever, RecreateDependencies: api.RecreateNever})
+	}); err != nil {
+		return err
+	}
+	run, err := c.l.Engine.Container(cleanup, p.Name, labels)
+	if err == nil && run == nil {
+		err = fmt.Errorf("its container was not created")
+	}
+	if err != nil {
+		return err
+	}
+	defer c.l.Engine.RemoveKeepVolumes(cleanup, run.ID)
+	if err := c.l.Engine.Start(ctx, run.ID); err != nil {
+		return err
+	}
+	for {
+		cur, err := c.l.Engine.Container(ctx, p.Name, labels)
+		if err != nil {
+			return err
+		}
+		if cur == nil {
+			return fmt.Errorf("its container is gone")
+		}
+		if !cur.Running {
+			if cur.ExitCode != 0 {
+				out, _ := c.l.Engine.Logs(cleanup, cur.ID, 20)
+				return fmt.Errorf("exited with %d:\n%s", cur.ExitCode, strings.TrimRight(out, "\n"))
+			}
+			return nil
+		}
+		c.l.Engine.Wait(ctx, p.Name, time.Second)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+}
+
+// removeCreated removes the replicas of app's revision that never started.
+func (c composeScaler) removeCreated(ctx context.Context, app types.ServiceConfig) {
+	reps, _ := c.l.Engine.Replicas(context.WithoutCancel(ctx), c.l.Derived.Project.Name, original(c.l, app.Name))
+	for _, r := range reps {
+		if r.Labels[revision.LabelSpecHash] == app.Labels[revision.LabelSpecHash] && !r.Running {
+			c.l.Engine.Remove(context.WithoutCancel(ctx), r.ID)
+		}
+	}
 }
 
 // noPull sets pull_policy never on a project copy handed to Compose: prePull

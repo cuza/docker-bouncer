@@ -1230,3 +1230,62 @@ networks:
 		}
 	}
 }
+
+// pre_start hooks run before the new replicas start on every bounce and
+// undo, as Compose runs them for a recreated service; a failing hook fails
+// the bounce and the old replicas keep serving.
+func TestPreStartRunsOnBounceAndUndo(t *testing.T) {
+	port := freePort(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: bouncer-e2e-app:v1
+    ports: ["127.0.0.1:%d:8080"]
+    volumes: ["./hooks:/hooks", "/scratch"]
+    pre_start:
+      - entrypoint: ["sh", "-c", "echo $$VERSION >> /hooks/log"]
+    x-bouncer: { %s, drain_method_params: { delay: 1s } }
+`, port, fast))
+	if err := os.MkdirAll(filepath.Join(p.dir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ran := func(want ...string) {
+		t.Helper()
+		b, _ := os.ReadFile(filepath.Join(p.dir, "hooks", "log"))
+		if got := strings.Fields(string(b)); !slices.Equal(got, want) {
+			t.Fatalf("hooks ran for %q, want %q", got, want)
+		}
+	}
+	p.mustUp()
+	ran("v1")
+	p.mustUp()
+	ran("v1") // no bounce, no hook
+	p.write(strings.Replace(p.yaml, ":v1", ":v2", 1))
+	p.mustUp()
+	ran("v1", "v2")
+	if out, code := p.bouncer("undo"); code != 0 {
+		t.Fatalf("undo: %d\n%s", code, out)
+	}
+	ran("v1", "v2", "v1")
+	p.write(strings.Replace(strings.Replace(p.yaml, ":v2", ":v1", 1), ">> /hooks/log", ">> /hooks/log; echo migration-failed >&2; exit 3", 1))
+	before := p.replicas("api")
+	volumes := docker(t, "volume", "ls", "-q")
+	if out, code := p.bouncer("up"); code != 1 || !strings.Contains(out, "pre_start[0]: exited with 3") || !strings.Contains(out, "migration-failed") {
+		t.Fatalf("a failing hook: exit %d, want 1 with its exit code and output\n%s", code, out)
+	}
+	// The hook and the unstarted replica are gone, with the replica's
+	// anonymous volume.
+	if ids := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.hook=pre_start"); len(ids) != 0 {
+		t.Fatalf("hook containers left: %v", ids)
+	}
+	if after := docker(t, "volume", "ls", "-q"); after != volumes {
+		t.Fatalf("volumes leaked:\nbefore %s\nafter %s", volumes, after)
+	}
+	ran("v1", "v2", "v1", "v1")
+	if !slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("a failing hook must leave the old replicas alone")
+	}
+	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "v1") {
+		t.Fatalf("GET / = %q", body)
+	}
+}

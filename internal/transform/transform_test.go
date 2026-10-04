@@ -46,7 +46,19 @@ func TestProxyTakesNamePortsAndAliases(t *testing.T) {
 }
 
 func TestReplicasLoseHostPortsAndAliases(t *testing.T) {
-	r, _ := Apply(project())
+	p := project()
+	set(p, "api", func(s *types.ServiceConfig) {
+		h := types.PreStartHook{}
+		h.Networks = map[string]*types.ServiceNetworkConfig{"default": {Aliases: []string{"public-api"}}}
+		s.PreStart = []types.PreStartHook{h}
+	})
+	r, _ := Apply(p)
+	if n := r.Project.Services["api-app"].PreStart[0].Networks["default"]; n == nil || len(n.Aliases) != 0 {
+		t.Fatal("pre_start hooks keep the network but not the alias")
+	}
+	if len(p.Services["api"].PreStart[0].Networks["default"].Aliases) != 1 {
+		t.Fatal("the user's hook must keep its alias")
+	}
 	app := r.Project.Services["api-app"]
 	if app.Image != "registry/api@sha256:1" || len(app.Ports) != 0 {
 		t.Fatalf("app: %+v", app)

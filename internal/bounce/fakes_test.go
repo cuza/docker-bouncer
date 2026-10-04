@@ -96,6 +96,10 @@ func (w *world) Replicas(context.Context, string, string) ([]engine.Replica, err
 func (w *world) Container(context.Context, string, map[string]string) (*engine.Replica, error) {
 	return nil, nil
 }
+func (w *world) Start(context.Context, string) error               { return nil }
+func (w *world) RemoveKeepVolumes(context.Context, string) error   { return nil }
+func (w *world) Logs(context.Context, string, int) (string, error) { return "", nil }
+
 func (w *world) Stop(_ context.Context, id string) error {
 	w.events = append(w.events, "stop:"+id)
 	w.stopped = append(w.stopped, id)

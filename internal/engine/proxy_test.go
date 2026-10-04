@@ -21,7 +21,10 @@ func (f *fakeEngine) Replicas(context.Context, string, string) ([]Replica, error
 func (f *fakeEngine) Container(context.Context, string, map[string]string) (*Replica, error) {
 	return nil, nil
 }
+func (f *fakeEngine) Start(context.Context, string) error                     { return nil }
 func (f *fakeEngine) Stop(context.Context, string) error                      { return nil }
+func (f *fakeEngine) RemoveKeepVolumes(context.Context, string) error         { return nil }
+func (f *fakeEngine) Logs(context.Context, string, int) (string, error)       { return "", nil }
 func (f *fakeEngine) Remove(context.Context, string) error                    { return nil }
 func (f *fakeEngine) Wait(context.Context, string, time.Duration)             {}
 func (f *fakeEngine) Image(context.Context, string) (string, []string, error) { return "", nil, nil }
