@@ -90,7 +90,7 @@ prefixes `plain` lines with an RFC 3339 UTC time.
 | `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision |
 | `history SERVICE` | Stored revisions |
 | `ps` | Containers with role and revision |
-| `ls` | Projects with Services on this host |
+| `ls` | Compose projects on this host, with their Services and compose files |
 | `logs SERVICE [--follow] [--proxy] [-n N]` | Logs of all replicas, or the proxy |
 | `pull [SERVICE…]` | Pull images, including the proxy image |
 | `config` | The derived project |
