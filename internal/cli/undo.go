@@ -43,7 +43,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				if cur == nil {
 					continue
 				}
-				h, err := revision.History(cur)
+				h, err := readHistory(cur)
 				if err != nil {
 					return Exit(1, fmt.Errorf("%s: %w", svc.Name, err))
 				}
@@ -109,7 +109,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 					}
 					p := plans[svc.Name]
 					// A concurrent up may have moved history since the target was picked.
-					h, err := revision.History(cur)
+					h, err := readHistory(cur)
 					if err != nil {
 						return types.ServiceConfig{}, err
 					}

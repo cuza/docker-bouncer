@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/cuza/docker-bouncer/internal/format"
+	"github.com/cuza/docker-bouncer/internal/transform"
 )
 
 // invocation is how an up or undo loaded its project, stored on every
@@ -62,9 +64,11 @@ func (inv invocation) encode() string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-// decodeInvocation reads a label written by encode; ok is false when there
-// is none (a replica made before invocations were recorded).
-func decodeInvocation(s string) (inv invocation, ok bool, err error) {
+// decodeInvocation reads the invocation label of a replica's labels,
+// migrated from the replica's format; ok is false when there is none (a
+// replica made before invocations were recorded).
+func decodeInvocation(labels map[string]string) (inv invocation, ok bool, err error) {
+	s := labels[transform.LabelInvocation]
 	if s == "" {
 		return inv, false, nil
 	}
@@ -80,5 +84,10 @@ func decodeInvocation(s string) (inv invocation, ok bool, err error) {
 	if err != nil {
 		return inv, false, err
 	}
-	return inv, true, json.Unmarshal(j, &inv)
+	from, _ := labelFormat(labels)
+	p, err := format.Migrate(format.Steps, from, format.Payloads{Invocation: j})
+	if err != nil {
+		return inv, false, err
+	}
+	return inv, true, json.Unmarshal(p.Invocation, &inv)
 }

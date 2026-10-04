@@ -286,7 +286,7 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 	return (&bounce.Runner{
 		Project: l.Derived.Project.Name, Svc: svc, App: app, N: app.GetScale(),
 		Engine: l.Engine, Proxy: px,
-		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now,
+		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now, Key: l.key,
 	}).Run(ctx)
 }
 

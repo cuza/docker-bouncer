@@ -23,10 +23,11 @@ type loaded struct {
 	Project *types.Project // the user's
 	Derived *transform.Result
 	Engine  engine.Engine
-	Events  api.EventProcessor          // the --progress display
-	mu      *sync.Mutex                 // one Compose call at a time; bounce loops stay parallel
-	inv     invocation                  // how this run loaded the project
-	recheck func(context.Context) error // run by withLock once the lock is held
+	Events  api.EventProcessor             // the --progress display
+	mu      *sync.Mutex                    // one Compose call at a time; bounce loops stay parallel
+	inv     invocation                     // how this run loaded the project
+	key     func(map[string]string) string // bounce.Runner.Key
+	recheck func(context.Context) error    // run by withLock once the lock is held
 }
 
 func load(ctx context.Context, dockerCli command.Cli, pf *ProjectFlags) (*loaded, error) {

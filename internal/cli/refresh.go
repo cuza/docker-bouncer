@@ -95,7 +95,7 @@ to date or skipped; 1 when one failed; 2 on a usage or config error.`,
 				res = append(res, refreshProject(ctx, dockerCli, ev, name, found[name], o))
 			}
 			forProject(ev, "")
-			text, err := refreshSummary(res)
+			text, err := refreshSummary("refresh", res)
 			status := api.Done
 			if err != nil {
 				status = api.Error
@@ -170,9 +170,9 @@ type refreshResult struct {
 	err    error // with failed
 }
 
-// refreshSummary is the closing line and the exit: 0 unless a project
+// refreshSummary is cmd's (refresh or migrate) closing line and the exit: 0 unless a project
 // failed, then the highest code among the failures (1 bounce, 2 config).
-func refreshSummary(res []refreshResult) (string, error) {
+func refreshSummary(cmd string, res []refreshResult) (string, error) {
 	count := map[string]int{}
 	code := 0
 	for _, r := range res {
@@ -202,7 +202,7 @@ func refreshSummary(res []refreshResult) (string, error) {
 	if code == 0 {
 		return text, nil
 	}
-	return text, Exit(code, fmt.Errorf("refresh: %d of %d %s failed", count[failed], len(res), noun))
+	return text, Exit(code, fmt.Errorf("%s: %d of %d %s failed", cmd, count[failed], len(res), noun))
 }
 
 func refreshProject(ctx context.Context, dockerCli command.Cli, ev api.EventProcessor, name string, hp hostProject, o refreshOptions) refreshResult {
@@ -232,7 +232,7 @@ func refreshProject(ctx context.Context, dockerCli command.Cli, ev api.EventProc
 		return fail(Exit(1, refuse)) // a failed project, not a usage error
 	}
 	ev.On(notes...)
-	inv, _, err := decodeInvocation(hp.labels[transform.LabelInvocation])
+	inv, _, err := decodeInvocation(hp.labels)
 	if err != nil {
 		return fail(Exit(1, fmt.Errorf("invocation label: %w", err)))
 	}
@@ -250,7 +250,7 @@ func refreshProject(ctx context.Context, dockerCli command.Cli, ev api.EventProc
 		if err != nil {
 			return fail(Exit(1, err))
 		}
-		if h, ok, _ := decodeInvocation(cur[transform.LabelInvocation]); ok && h.Command == "undo" {
+		if h, ok, _ := decodeInvocation(cur); ok && h.Command == "undo" {
 			l.event("Service "+svc.Name, api.Warning, fmt.Sprintf("Held at revision %d by undo;", h.Revision), "run docker bouncer up to resume")
 			continue
 		}

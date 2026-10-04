@@ -83,7 +83,9 @@ and `history`, never compared) and a `MAJOR.MINOR` storage format: any minor
 works with any CLI of the same major; a newer major makes `up` and `undo`
 refuse with exit 2 and `refresh` fail that project with exit 1 (read-only
 commands, `stop` and `down` warn), and
-`--ignore-format` overrides that.
+`--ignore-format` overrides that. A stack at an older format (or none) keeps
+working; `docker bouncer migrate` brings it to the CLI's format with one
+zero-downtime bounce, and `ls` says when one needs it.
 
 ## Commands
 
@@ -99,6 +101,7 @@ project whose storage format is newer than this CLI can safely change.
 | `up [SERVICE…] [--pull …] [--no-build] [--force-unlock] [-d] [--wait]` | Pull, build every `build:` service, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait`, `--build` accepted for compatibility) |
 | `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision, and its exact image |
 | `refresh [PROJECT…] [-a] [--dry-run] [--pull never]` | For every project with Services on this host (or the named ones): pull tags that moved and bounce, loading each project as its last `up` did; `-a` also recreates plain services whose image changed |
+| `migrate [PROJECT…] [--dry-run]` | Bring projects stored in an older format to this CLI's: one bounce from the current revision, its exact image |
 | `history SERVICE` | Stored revisions, with the Bouncer version that made each |
 | `ps` | Containers with role and revision |
 | `ls` | Projects with Services on this host: revision, replicas, status (`converged`, `drifted`, `bouncing`, `stopped`), Bouncer version, storage format and compose files |

@@ -25,7 +25,7 @@ func historyCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil || cur == nil {
 				return Exit(1, fmt.Errorf("%s: no running replica with revision labels", args[0]))
 			}
-			h, err := revision.History(cur)
+			h, err := readHistory(cur)
 			if err != nil {
 				return Exit(1, err)
 			}

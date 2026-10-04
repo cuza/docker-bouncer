@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -50,6 +51,82 @@ func TestUnsupportedFormatRefused(t *testing.T) {
 		if f := strings.Fields(line); len(f) > 6 && f[0] == p.name && f[6] != "2.0" {
 			t.Fatalf("ls FORMAT: %q", line)
 		}
+	}
+}
+
+// A stack from before formats were recorded: ls asks to migrate it, a dry
+// run changes nothing, migrate re-bounces it with no failed request, and a
+// second migrate (or an up) finds nothing to do.
+func TestMigrate(t *testing.T) {
+	port := freePort(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: bouncer-e2e-app:v1
+    deploy: { replicas: 2 }
+    ports: ["127.0.0.1:%d:8080"]
+    healthcheck: { test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"], interval: 1s }
+    x-bouncer: { %s, drain_method_params: { delay: 2s } }
+`, port, fast))
+	old := p.cmd("up")
+	old.Env = append(os.Environ(), "BOUNCER_E2E_FORMAT=none")
+	if out, err := old.CombinedOutput(); err != nil {
+		t.Fatalf("up without a format: %v\n%s", err, out)
+	}
+	hint := "project " + p.name + " is at format none, this CLI writes 1.0; run docker bouncer migrate " + p.name
+	if out, _ := p.bouncer("ls"); !strings.Contains(out, hint) {
+		t.Fatalf("ls: no hint\n%s", out)
+	}
+	before := p.ids()
+	out, code := p.bouncer("migrate", "--dry-run")
+	if code != 0 || !strings.Contains(out, "Would migrate: none → 1.0; would bounce api") {
+		t.Fatalf("dry run: %d\n%s", code, out)
+	}
+	if after := p.ids(); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatalf("dry run changed containers %v → %v", before, after)
+	}
+	stop := make(chan struct{})
+	res := load(t, url(port, "/"), stop)
+	out, code = p.bouncer("migrate")
+	close(stop)
+	if code != 0 || !strings.Contains(out, "Migrated to format 1.0") {
+		t.Fatalf("migrate: %d\n%s", code, out)
+	}
+	if r := <-res; r.failures != 0 || r.total == 0 {
+		t.Fatalf("%d failed requests out of %d: %v", r.failures, r.total, r.samples)
+	}
+	reps := p.replicas("api")
+	for _, id := range reps {
+		if f := docker(t, "inspect", "-f", `{{index .Config.Labels "dev.cuza.bouncer.format"}}`, id); f != "1.0" {
+			t.Fatalf("replica %s format %q after migrate", id, f)
+		}
+	}
+	if len(reps) != 2 || len(p.history("api")) != 1 {
+		t.Fatalf("replicas %v, history %q: migrate keeps the revision", reps, p.history("api"))
+	}
+	after := p.ids()
+	if out, code := p.bouncer("migrate"); code != 0 || !strings.Contains(out, "Up to date") {
+		t.Fatalf("second migrate: %d\n%s", code, out)
+	}
+	p.mustUp()
+	if again := p.ids(); fmt.Sprint(again) != fmt.Sprint(after) {
+		t.Fatalf("migrate again or up changed containers %v → %v", after, again)
+	}
+}
+
+// A stopped project has no running replica to bounce from: migrate skips it.
+func TestMigrateSkipsStopped(t *testing.T) {
+	p := project(t, api(freePort(t), 1, fast))
+	old := p.cmd("up")
+	old.Env = append(os.Environ(), "BOUNCER_E2E_FORMAT=none")
+	if out, err := old.CombinedOutput(); err != nil {
+		t.Fatalf("up without a format: %v\n%s", err, out)
+	}
+	if out, code := p.bouncer("stop"); code != 0 {
+		t.Fatalf("stop: %d\n%s", code, out)
+	}
+	if out, code := p.bouncer("migrate"); code != 0 || !strings.Contains(out, "Skipped: stopped") || !strings.Contains(out, "1 skipped") {
+		t.Fatalf("migrate: %d\n%s", code, out)
 	}
 }
 

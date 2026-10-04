@@ -308,3 +308,24 @@ func History(labels map[string]string) ([]Entry, error) {
 	}
 	return append(out, past...), nil
 }
+
+// Relabel writes h (as History returns it: the current revision, then the
+// history) back into a copy of labels: the spec, its hash and the history.
+// Format migrations use it to store migrated payloads.
+func Relabel(labels map[string]string, h []Entry) (map[string]string, error) {
+	out := map[string]string{}
+	for k, v := range labels {
+		out[k] = v
+	}
+	spec, err := pack(h[0].Spec)
+	if err != nil {
+		return nil, err
+	}
+	past, err := pack(h[1:])
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(h[0].Spec)
+	out[LabelSpec], out[LabelSpecHash], out[LabelHistory] = spec, hex.EncodeToString(sum[:8]), past
+	return out, nil
+}

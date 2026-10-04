@@ -10,6 +10,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/cuza/docker-bouncer/internal/format"
 	"github.com/cuza/docker-bouncer/internal/lock"
+	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/cuza/docker-bouncer/internal/transform"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v5/pkg/api"
@@ -58,57 +59,141 @@ func stackLabels(ctx context.Context, c client.APIClient, project string) ([]map
 	return out, nil
 }
 
-// formatCheck decides whether a command may run on a stack whose replicas
-// and lock carry labels: a refusal when a command that rewrites
-// Bouncer state (mutating) meets a major this CLI can't safely change or
-// no longer reads; otherwise notes to show. Read-only commands, stop and
-// down only warn; --ignore-format (ignore) turns refusals into warnings.
-// Versions are shown, never compared.
-func formatCheck(project string, labels []map[string]string, mutating, ignore bool) (error, []api.Resource) {
-	id := "Project " + project
-	var notes []api.Resource
-	note := func(st api.EventStatus, text string) {
-		notes = append(notes, api.Resource{ID: id, Status: st, Text: text})
-	}
-	var high, low format.Format
-	var highVer, lowVer string
-	missing, seen := false, false
+// stackFormats is what the format labels of a stack's replicas and lock
+// say. A missing label (from before formats were recorded) counts as 1.0 in
+// high and low; one this CLI can't parse is unknown, and counts as newer.
+type stackFormats struct {
+	high, low       format.Format
+	highVer, lowVer string
+	missing, seen   bool
+	unknown         string // the first unparseable label
+	unknownVer      string
+}
+
+func scanFormats(labels []map[string]string) stackFormats {
+	var s stackFormats
 	for _, l := range labels {
-		f, err := format.Parse(l[transform.LabelFormat])
-		if l[transform.LabelFormat] == "" || err != nil {
-			missing, f = true, format.Format{Major: 1} // before formats were recorded: 1.0
+		f, ok := labelFormat(l)
+		if !ok {
+			if s.unknown == "" {
+				s.unknown, s.unknownVer = l[transform.LabelFormat], l[transform.LabelVersion]
+			}
+			continue
 		}
-		if !seen || high.Less(f) {
-			high, highVer = f, l[transform.LabelVersion]
+		s.missing = s.missing || l[transform.LabelFormat] == ""
+		if !s.seen || s.high.Less(f) {
+			s.high, s.highVer = f, l[transform.LabelVersion]
 		}
-		if !seen || f.Less(low) {
-			low, lowVer = f, l[transform.LabelVersion]
+		if !s.seen || f.Less(s.low) {
+			s.low, s.lowVer = f, l[transform.LabelVersion]
 		}
-		seen = true
+		s.seen = true
 	}
-	var refuse string
+	return s
+}
+
+// refusal is why a command that rewrites Bouncer state must not touch the
+// stack, or "".
+func (s stackFormats) refusal(project string) string {
 	switch {
-	case !seen:
-		return nil, nil
-	case high.Major > format.Major:
-		refuse = fmt.Sprintf("project %s: format %s from bouncer %s is newer than this CLI (%s) can safely change; upgrade docker-bouncer, or pass --ignore-format", project, high, highVer, Version)
-	case low.Major < format.MinReadableMajor:
-		refuse = fmt.Sprintf("project %s: format %s is no longer read by this CLI; run docker bouncer down with bouncer %s, then up with this one", project, low, lowVer)
-	case high.Major == format.Major && high.Minor > format.Minor:
-		note(api.Warning, fmt.Sprintf("deployed with a newer bouncer (%s, format %s); this CLI writes %s", highVer, high, format.Current))
+	case s.unknown != "":
+		return fmt.Sprintf("project %s: format %q from bouncer %s is not one this CLI understands; upgrade docker-bouncer, or pass --ignore-format", project, s.unknown, s.unknownVer)
+	case !s.seen:
+		return ""
+	case s.high.Major > format.Major:
+		return fmt.Sprintf("project %s: format %s from bouncer %s is newer than this CLI (%s) can safely change; upgrade docker-bouncer, or pass --ignore-format", project, s.high, s.highVer, Version)
+	case s.low.Major < format.MinReadableMajor:
+		return fmt.Sprintf("project %s: format %s is no longer read by this CLI; run docker bouncer down with bouncer %s, then up with this one", project, s.low, s.lowVer)
 	}
+	return ""
+}
+
+// formatCheck decides whether a command may run on a stack whose replicas
+// and lock carry labels: a refusal when a command that rewrites Bouncer
+// state (mutating) meets a format this CLI can't safely change or no longer
+// reads; otherwise the mismatches to warn about. Read-only commands, stop
+// and down only warn; --ignore-format (ignore) turns refusals into
+// warnings. Versions are shown, never compared.
+func formatCheck(project string, labels []map[string]string, mutating, ignore bool) (error, []api.Resource) {
+	var notes []api.Resource
+	warn := func(text string) {
+		notes = append(notes, api.Resource{ID: "Project " + project, Status: api.Warning, Text: text})
+	}
+	s := scanFormats(labels)
+	refuse := s.refusal(project)
 	switch {
 	case refuse != "" && mutating && !ignore:
 		return errors.New(refuse), nil
 	case refuse != "" && mutating:
-		note(api.Warning, "--ignore-format: "+refuse)
+		warn("--ignore-format: " + refuse)
 	case refuse != "":
-		note(api.Warning, refuse)
+		warn(refuse)
+	case s.high.Major == format.Major && s.high.Minor > format.Minor:
+		warn(fmt.Sprintf("project %s: deployed with a newer bouncer (%s, format %s); this CLI writes %s", project, s.highVer, s.high, format.Current))
 	}
-	if missing {
-		note(api.Done, "deployed before bouncer recorded its version; the next bounce records it")
+	if hint := migrateHint(project, labels); hint != "" && refuse == "" {
+		warn(hint)
 	}
 	return nil, notes
+}
+
+// migrateHint asks to migrate a stack older than the CLI's format, or, below
+// the oldest format this CLI reads, to take it down and up again; "" when
+// neither applies.
+func migrateHint(project string, labels []map[string]string) string {
+	s := scanFormats(labels)
+	switch {
+	case !s.seen:
+		return ""
+	case s.low.Major < format.MinReadableMajor:
+		return s.refusal(project)
+	case s.missing:
+		return fmt.Sprintf("project %s is at format none, this CLI writes %s; run docker bouncer migrate %s", project, format.Current, project)
+	case s.low.Less(format.Current):
+		return fmt.Sprintf("project %s is at format %s, this CLI writes %s; run docker bouncer migrate %s", project, s.low, format.Current, project)
+	}
+	return ""
+}
+
+// labelFormat is the format a container's labels were written in: 1.0 for
+// one from before formats were recorded. ok is false for a label this CLI
+// can't parse (then Current, so payloads are read as they are).
+func labelFormat(labels map[string]string) (format.Format, bool) {
+	v := labels[transform.LabelFormat]
+	if v == "" {
+		return format.Format{Major: 1}, true
+	}
+	f, err := format.Parse(v)
+	if err != nil {
+		return format.Current, false
+	}
+	return f, true
+}
+
+// readHistory is revision.History with every stored spec migrated from the
+// replica's format to the CLI's, so undo can restore an old revision.
+//
+// ponytail: up and undo pass the replica's labels to revision.Stamp, which
+// carries the history label forward as stored (only migrate re-encodes it,
+// with revision.Relabel); the first step that changes payloads must migrate
+// the labels handed to Stamp too.
+func readHistory(labels map[string]string) ([]revision.Entry, error) {
+	h, err := revision.History(labels)
+	if err != nil {
+		return nil, err
+	}
+	var p format.Payloads
+	for _, e := range h {
+		p.Specs = append(p.Specs, e.Spec)
+	}
+	from, _ := labelFormat(labels)
+	if p, err = format.Migrate(format.Steps, from, p); err != nil {
+		return nil, err
+	}
+	for i := range h {
+		h[i].Spec = p.Specs[i]
+	}
+	return h, nil
 }
 
 // checkFormat runs formatCheck on l's project before a command touches it,

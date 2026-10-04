@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,8 +34,35 @@ func lsCmd(dockerCli command.Cli) *cobra.Command {
 			if err != nil {
 				return Exit(1, err)
 			}
-			return lsTable(dockerCli.Out(), append(res.Items, locks.Items...))
+			all := append(res.Items, locks.Items...)
+			if err := lsTable(dockerCli.Out(), all); err != nil {
+				return err
+			}
+			for _, h := range lsHints(all) {
+				fmt.Fprintln(dockerCli.Err(), h)
+			}
+			return nil
 		}}
+}
+
+// lsHints are the format warnings each project gets from a read-only
+// command: a newer or unreadable format, or a hint to migrate.
+func lsHints(cs []container.Summary) []string {
+	stacks := map[string][]map[string]string{}
+	for _, c := range cs {
+		if r := c.Labels[transform.LabelRole]; r == transform.RoleReplica || r == transform.RoleLock {
+			p := c.Labels[api.ProjectLabel]
+			stacks[p] = append(stacks[p], c.Labels)
+		}
+	}
+	var out []string
+	for _, p := range slices.Sorted(maps.Keys(stacks)) {
+		_, notes := formatCheck(p, stacks[p], false, false)
+		for _, n := range notes {
+			out = append(out, n.Text)
+		}
+	}
+	return out
 }
 
 // lsTable has a row per Service of the Bouncer containers and locks in cs.

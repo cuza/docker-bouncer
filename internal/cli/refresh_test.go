@@ -17,14 +17,14 @@ import (
 func TestInvocationRoundTrip(t *testing.T) {
 	inv := invocation{Version: "v1.2.3", Command: "undo", Revision: 4, Files: []string{"/srv/app/compose.yaml", "/srv/app/prod.yaml"},
 		Dir: "/srv/app", Name: "app", EnvFiles: []string{"/srv/app/prod.env"}, Profiles: []string{"*"}}
-	got, ok, err := decodeInvocation(inv.encode())
+	got, ok, err := decodeInvocation(map[string]string{transform.LabelInvocation: inv.encode()})
 	if err != nil || !ok || !reflect.DeepEqual(got, inv) {
 		t.Fatalf("%+v %v %v, want %+v", got, ok, err, inv)
 	}
-	if _, ok, err := decodeInvocation(""); ok || err != nil {
+	if _, ok, err := decodeInvocation(nil); ok || err != nil {
 		t.Fatalf("no label: ok=%v err=%v", ok, err)
 	}
-	if _, _, err := decodeInvocation("not base64!"); err == nil {
+	if _, _, err := decodeInvocation(map[string]string{transform.LabelInvocation: "not base64!"}); err == nil {
 		t.Fatal("a bad label is an error")
 	}
 }
@@ -80,7 +80,7 @@ func TestRefreshSummary(t *testing.T) {
 		{[]refreshResult{{status: failed, err: errors.New("x")}, {status: failed, err: Exit(2, errors.New("y"))}}, "2 projects: 2 failed", 2},
 		{[]refreshResult{{status: wouldDo}}, "1 project: 1 would change", 0},
 	} {
-		text, err := refreshSummary(tc.res)
+		text, err := refreshSummary("refresh", tc.res)
 		code := 0
 		if se, ok := errors.AsType[dockercli.StatusError](err); ok {
 			code = se.StatusCode
@@ -88,6 +88,9 @@ func TestRefreshSummary(t *testing.T) {
 		if text != tc.text || code != tc.code {
 			t.Errorf("%v: %q exit %d, want %q exit %d", tc.res, text, code, tc.text, tc.code)
 		}
+	}
+	if _, err := refreshSummary("migrate", []refreshResult{{status: failed, err: errors.New("x")}}); err == nil || err.Error() != "migrate: 1 of 1 project failed" {
+		t.Fatalf("migrate summary: %v", err)
 	}
 }
 

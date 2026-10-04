@@ -55,3 +55,23 @@ func TestLsTable(t *testing.T) {
 		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+func TestLsHints(t *testing.T) {
+	c := func(project, format string) container.Summary {
+		l := map[string]string{api.ProjectLabel: project, transform.LabelRole: transform.RoleReplica}
+		if format != "" {
+			l[transform.LabelFormat] = format
+		}
+		return container.Summary{Labels: l}
+	}
+	got := lsHints([]container.Summary{c("web", "1.0"), c("old", ""), c("old", "1.0"), c("minor", "1.4"), c("major", "2.0"), c("odd", "x")})
+	want := []string{
+		`project major: format 2.0 from bouncer  is newer than this CLI (dev) can safely change; upgrade docker-bouncer, or pass --ignore-format`,
+		`project minor: deployed with a newer bouncer (, format 1.4); this CLI writes 1.0`,
+		`project odd: format "x" from bouncer  is not one this CLI understands; upgrade docker-bouncer, or pass --ignore-format`,
+		"project old is at format none, this CLI writes 1.0; run docker bouncer migrate old",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
