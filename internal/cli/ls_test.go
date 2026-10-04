@@ -31,6 +31,8 @@ func TestLsTable(t *testing.T) {
 		c("new", transform.RoleReplica, "api", "running", "h2"),
 		c("busy", transform.RoleReplica, "api", "running", "h1"),
 		c("busy", transform.RoleLock, "", "created", ""),
+		c("halted", transform.RoleReplica, "api", "exited", "h1"),
+		c("halted", transform.RoleReplica, "api", "exited", "h2"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +43,7 @@ func TestLsTable(t *testing.T) {
 	want := []string{
 		"PROJECT SERVICE REVISION REPLICAS STATUS CONFIG FILES",
 		"busy api 3 1/1 bouncing /srv/busy/compose.yaml",
+		"halted api 3 0/2 stopped /srv/halted/compose.yaml",
 		"new api 3 2/2 drifted /srv/new/compose.yaml",
 		"off api 3 0/1 stopped /srv/off/compose.yaml",
 		"web api 3 2/2 converged /srv/web/compose.yaml",

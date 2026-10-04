@@ -185,4 +185,11 @@ func TestUpgradeTypes(t *testing.T) {
 	if _, err := Parse(svc(map[string]any{"upgrade_types": []any{"", "a b"}}, nil, "8080")); err == nil || len(err.(*Error).Problems) != 2 {
 		t.Fatalf("empty and spaced types must be rejected: %v", err)
 	}
+	bad := []any{"foo/bar", "foo:bar", `say"hi"`, "tab\there", "ctl\x01", "a(b)", "x=y"}
+	if _, err := Parse(svc(map[string]any{"upgrade_types": bad}, nil, "8080")); err == nil || len(err.(*Error).Problems) != len(bad) {
+		t.Fatalf("every non-token value must be rejected: %v", err)
+	}
+	if _, err := Parse(svc(map[string]any{"upgrade_types": []any{"h2c", "x-custom_1.0~", "a!#$%&'*+^`|"}}, nil, "8080")); err != nil {
+		t.Fatalf("tchar values must pass: %v", err)
+	}
 }

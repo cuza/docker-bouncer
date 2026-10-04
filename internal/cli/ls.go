@@ -90,10 +90,10 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 		switch {
 		case locked[k[0]]:
 			status = "bouncing"
+		case r.running == 0: // before drifted: no replica running is stopped, whatever revisions remain
+			status = "stopped"
 		case len(r.hashes) > 1:
 			status = "drifted"
-		case r.running == 0:
-			status = "stopped"
 		}
 		f := files[k[0]]
 		if f == "" {

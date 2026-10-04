@@ -192,7 +192,7 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 	for _, u := range r.UpgradeTypes {
 		// Envoy matches the Upgrade header without case; one HTTP token each.
 		u = strings.ToLower(u)
-		if u == "" || strings.ContainsAny(u, " \t,") {
+		if !isToken(u) {
 			bad("upgrade_types: %q is not an Upgrade header token", u)
 		} else if !slices.Contains(s.UpgradeTypes, u) {
 			s.UpgradeTypes = append(s.UpgradeTypes, u)
@@ -272,4 +272,20 @@ func hasTarget(ports []Port, n int) bool {
 		}
 	}
 	return false
+}
+
+// isToken reports whether s is an RFC 9110 token: one or more tchar.
+func isToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", c):
+		default:
+			return false
+		}
+	}
+	return true
 }

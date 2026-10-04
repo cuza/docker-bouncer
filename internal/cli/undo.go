@@ -77,8 +77,8 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				// missing, an image ID no registry serves must still be local.
 				run := app
 				run.Image = runImage(app)
-				if strings.HasPrefix(run.Image, "sha256:") && !imagePresent(dockerCli)(ctx, run.Image) {
-					return Exit(1, fmt.Errorf("%s: revision %d ran image %s (%s), which is no longer local; build or pull it again", svc.Name, target.Revision, run.Image, app.Image))
+				if err := undoImageCheck(svc.Name, target.Revision, app.Image, run, imagePresent(dockerCli)(ctx, run.Image)); err != nil {
+					return Exit(1, err)
 				}
 				pulls[app.Name] = run
 			}
@@ -198,4 +198,21 @@ func servicesOfLastUp(latest map[string]revision.Entry) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// undoImageCheck fails before the lock when a revision's exact image can't
+// be had: an image ID no registry serves that is gone, or a repo@digest that
+// is missing while the service's pull_policy forbids pulling it (never and
+// build are honoured, not overridden).
+func undoImageCheck(svc string, rev int, ref string, run types.ServiceConfig, present bool) error {
+	if present {
+		return nil
+	}
+	if strings.HasPrefix(run.Image, "sha256:") {
+		return fmt.Errorf("%s: revision %d ran image %s (%s), which is no longer local; build or pull it again", svc, rev, run.Image, ref)
+	}
+	if p := run.PullPolicy; p == types.PullPolicyNever || p == types.PullPolicyBuild {
+		return fmt.Errorf("%s: revision %d ran image %s (%s), which is not local and pull_policy is %s; pull it or change pull_policy", svc, rev, run.Image, ref, p)
+	}
+	return nil
 }
