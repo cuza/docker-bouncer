@@ -152,8 +152,13 @@ func render(svc config.Service, hosts []string, live bool) string {
 				hcEnd = 300
 			}
 			c["common_lb_config"] = obj{"ignore_new_hosts_until_first_hc": true}
+			// no_traffic_interval: a cluster that has had no traffic yet is checked
+			// at this rate instead of interval, and Envoy's default is 60s. A host
+			// is first checked the moment it is listed, usually before the app
+			// listens, so on a fresh proxy (first up, host reboot) a replica that
+			// was ready in seconds stayed unhealthy for a minute.
 			c["health_checks"] = []any{obj{
-				"timeout": "1s", "interval": "1s",
+				"timeout": "1s", "interval": "1s", "no_traffic_interval": "1s",
 				"unhealthy_threshold": 2, "healthy_threshold": 1,
 				"http_health_check": obj{"path": svc.Spec.HealthPath,
 					"expected_statuses": []any{obj{"start": 200, "end": hcEnd}}},

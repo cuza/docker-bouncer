@@ -62,6 +62,7 @@ func TestClustersOnePerPortWithHostnamesAndHealthCheck(t *testing.T) {
 		`"ignore_new_hosts_until_first_hc":true`,
 		`"http_health_check":{"expected_statuses":[{"end":500,"start":200}],"path":"/"}`, // default: any non-5xx
 		`"unhealthy_threshold":2`, `"healthy_threshold":1`,
+		`"interval":"1s"`, `"no_traffic_interval":"1s"`, // a proxy with no traffic yet must not wait Envoy's 60s
 		`"port_value":9090`,                         // the 9090 cluster's endpoints
 		`"health_check_config":{"port_value":8080}`, // every cluster checks the first port
 	} {
