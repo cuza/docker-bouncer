@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
+	"github.com/compose-spec/compose-go/v2/loader"
+	composetransform "github.com/compose-spec/compose-go/v2/transform"
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/cuza/docker-bouncer/internal/transform"
 	"github.com/docker/cli/pkg/kvfile"
@@ -71,7 +73,8 @@ type Entry struct {
 
 // stored is what a spec label holds. EnvFile.Required does not survive
 // compose-go's JSON (OptOut is omitzero and true counts as zero), so it is
-// kept alongside.
+// kept alongside; Decode reads absent as true instead, and Encode still
+// writes it so existing spec hashes do not change.
 type stored struct {
 	Service  types.ServiceConfig `json:"service"`
 	Required []bool              `json:"env_files_required,omitempty"`
@@ -225,15 +228,54 @@ func Encode(app types.ServiceConfig) (spec json.RawMessage, hash string, err err
 	return j, hex.EncodeToString(sum[:8]), nil
 }
 
+// Decode reads a spec Encode wrote. compose-go writes some fields to JSON in
+// a form its types cannot unmarshal (extra_hosts as a list, short ulimits,
+// file modes as octal strings, OptOut fields omitted when true), so the JSON
+// is read as a plain document and taken through compose-go's own loader
+// steps (canonical syntax, defaults, decoding), the path a compose file
+// takes. JSON stays the stored format, so existing labels and hashes match.
 func Decode(spec json.RawMessage) (types.ServiceConfig, error) {
-	var st stored
-	if err := json.Unmarshal(spec, &st); err != nil {
+	var st struct {
+		Service any `json:"service"`
+	}
+	d := json.NewDecoder(bytes.NewReader(spec))
+	d.UseNumber()
+	if err := d.Decode(&st); err != nil {
 		return types.ServiceConfig{}, err
 	}
-	for i := range st.Service.EnvFiles {
-		st.Service.EnvFiles[i].Required = types.OptOut(i < len(st.Required) && st.Required[i])
+	model := map[string]any{"services": map[string]any{"s": numbers(st.Service)}}
+	model, err := composetransform.Canonical(model, false)
+	if err == nil {
+		model, err = composetransform.SetDefaultValues(model)
 	}
-	return st.Service, nil
+	var app types.ServiceConfig
+	if err == nil {
+		err = loader.Transform(model["services"].(map[string]any)["s"], &app)
+	}
+	app.Name = ""
+	return app, err
+}
+
+// numbers turns JSON numbers into the ints and floats a YAML document holds,
+// which is what the loader's decoders expect.
+func numbers(v any) any {
+	switch t := v.(type) {
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return int(i)
+		}
+		f, _ := t.Float64()
+		return f
+	case []any:
+		for i := range t {
+			t[i] = numbers(t[i])
+		}
+	case map[string]any:
+		for k := range t {
+			t[k] = numbers(t[k])
+		}
+	}
+	return v
 }
 
 // Stamp returns app with all revision labels. current is the labels of a
