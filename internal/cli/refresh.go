@@ -261,7 +261,11 @@ func refreshProject(ctx context.Context, dockerCli command.Cli, ev api.EventProc
 		svcs = append(svcs, svc)
 	}
 	if o.dryRun {
-		if refreshDryRun(ctx, l, svcs, o) {
+		change, err := refreshDryRun(ctx, l, svcs, o)
+		if err != nil {
+			return fail(Exit(1, err))
+		}
+		if change {
 			say(api.Warning, "Would change")
 			return refreshResult{status: wouldDo}
 		}
@@ -416,15 +420,19 @@ func refreshPull(ctx context.Context, l *loaded, targets types.Services, present
 }
 
 // refreshDryRun reports, per Service, what a refresh would change, and
-// whether it would change anything. Nothing is pulled: a tag that moved in
+// whether it would change anything; a failed registry lookup is an error. Nothing is pulled: a tag that moved in
 // the registry is found by its manifest digest.
-func refreshDryRun(ctx context.Context, l *loaded, svcs []config.Service, o refreshOptions) bool {
+func refreshDryRun(ctx context.Context, l *loaded, svcs []config.Service, o refreshOptions) (bool, error) {
 	change := false
 	for _, svc := range svcs {
 		id := "Service " + svc.Name
 		app := l.Derived.Project.Services[transform.AppName(svc.Name)]
 		var why []string
-		if d := registryMoved(ctx, l, id, app, o); d != "" {
+		d, err := registryMoved(ctx, l, app, o)
+		if err != nil {
+			return change, err
+		}
+		if d != "" {
 			why = append(why, fmt.Sprintf("%s moved in the registry to %s", app.Image, d))
 		}
 		cur, err := current(ctx, l, svc.Name)
@@ -455,7 +463,10 @@ func refreshDryRun(ctx context.Context, l *loaded, svcs []config.Service, o refr
 	// Plain services and proxies, as upPlainAndProxies hands them to Compose.
 	p := noPull(l.Derived.Project.WithServicesDisabled(appNames(l)...))
 	for _, n := range slices.Sorted(maps.Keys(p.Services)) {
-		verb, why := composeChange(ctx, l, p.Services[n], o)
+		verb, why, err := composeChange(ctx, l, p.Services[n], o)
+		if err != nil {
+			return change, err
+		}
 		if verb == "" {
 			continue
 		}
@@ -465,64 +476,68 @@ func refreshDryRun(ctx context.Context, l *loaded, svcs []config.Service, o refr
 		}
 		l.event("Service "+n, api.Warning, text, why)
 	}
-	return change
+	return change, nil
 }
 
 // composeChange is what Compose's up would do to s's container, as
 // recreate-on-diverged does: "create" when there is none, "recreate" when
 // its config hash (compose.ServiceHash) or, for a plain service, its image
 // changed, "start" when it is stopped; "" when nothing.
-func composeChange(ctx context.Context, l *loaded, s types.ServiceConfig, o refreshOptions) (verb, why string) {
+func composeChange(ctx context.Context, l *loaded, s types.ServiceConfig, o refreshOptions) (verb, why string, err error) {
 	c, err := l.Engine.Container(ctx, l.Derived.Project.Name, map[string]string{api.ServiceLabel: s.Name})
 	switch {
 	case err != nil:
-		return "", ""
+		return "", "", err
 	case c == nil:
-		return "create", "no container"
+		return "create", "no container", nil
 	}
 	if h, err := compose.ServiceHash(s); err == nil && h != c.Labels[api.ConfigHashLabel] {
-		return "recreate", "definition changed"
+		return "recreate", "definition changed", nil
 	}
 	if _, proxy := c.Labels[transform.LabelRole]; !proxy && s.Build == nil {
-		if d := registryMoved(ctx, l, "Service "+s.Name, s, o); d != "" {
-			return "recreate", fmt.Sprintf("%s moved in the registry to %s", s.Image, d)
+		d, err := registryMoved(ctx, l, s, o)
+		if err != nil {
+			return "", "", err
+		}
+		if d != "" {
+			return "recreate", fmt.Sprintf("%s moved in the registry to %s", s.Image, d), nil
 		}
 		if local, _, err := l.Engine.Image(ctx, s.Image); err == nil && local != c.Labels[api.ImageDigestLabel] {
-			return "recreate", fmt.Sprintf("image %s moved from %s to %s", s.Image, shortImage(c.Labels[api.ImageDigestLabel]), shortImage(local))
+			return "recreate", fmt.Sprintf("image %s moved from %s to %s", s.Image, shortImage(c.Labels[api.ImageDigestLabel]), shortImage(local)), nil
 		}
 	}
 	if !c.Running {
-		return "start", "stopped"
+		return "start", "stopped", nil
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // registryMoved is ref@digest when the registry's image for s's tag is not
 // the local one; "" when it is, or there is nothing to ask: what refreshPull
 // would not pull (--pull never, build:, a digest, pull_policy never or build).
-func registryMoved(ctx context.Context, l *loaded, id string, s types.ServiceConfig, o refreshOptions) string {
+// A failed lookup is an error: the dry run can't say the tag didn't move.
+func registryMoved(ctx context.Context, l *loaded, s types.ServiceConfig, o refreshOptions) (string, error) {
 	if o.pull == types.PullPolicyNever || s.Build != nil || strings.Contains(s.Image, "@") ||
 		s.PullPolicy == types.PullPolicyNever || s.PullPolicy == types.PullPolicyBuild {
-		return ""
+		return "", nil
 	}
 	named, err := reference.ParseNormalizedNamed(s.Image)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	d, err := o.registryDigest(ctx, s.Image)
 	if err != nil {
-		l.event(id, api.Warning, "Registry lookup failed:", err.Error())
-		return ""
+		return "", fmt.Errorf("%s: registry lookup for %s: %w", s.Name, s.Image, err)
 	}
 	_, local, _ := l.Engine.Image(ctx, s.Image)
 	for _, rd := range local {
 		if c, err := reference.ParseNormalizedNamed(rd); err == nil && c.Name() == named.Name() {
 			if cd, ok := c.(reference.Digested); ok && cd.Digest().String() == d {
-				return ""
+				return "", nil
 			}
 		}
 	}
-	return reference.FamiliarName(named) + "@" + d
+	return reference.FamiliarName(named) + "@" + d, nil
 }
 
 // shortImage shortens an image ID for a message; repo@digest stays whole.

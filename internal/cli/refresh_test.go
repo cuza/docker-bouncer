@@ -152,7 +152,10 @@ func TestDryRunPlainAndProxies(t *testing.T) {
 	for _, all := range []bool{false, true} {
 		r := &recorder{}
 		l.Events = r
-		change := refreshDryRun(context.Background(), l, nil, refreshOptions{all: all, pull: types.PullPolicyNever})
+		change, err := refreshDryRun(context.Background(), l, nil, refreshOptions{all: all, pull: types.PullPolicyNever})
+		if err != nil {
+			t.Fatal(err)
+		}
 		suffix := " with -a:"
 		if all {
 			suffix = ":"
@@ -180,9 +183,20 @@ func TestRegistryMovedHonoursPullPolicy(t *testing.T) {
 	}}
 	for _, policy := range []string{types.PullPolicyNever, types.PullPolicyBuild, types.PullPolicyMissing, ""} {
 		s := service("api", "registry/app:1", policy, false)
-		registryMoved(context.Background(), l, "Service api", s, o)
+		registryMoved(context.Background(), l, s, o)
 	}
 	if len(asked) != 2 {
 		t.Fatalf("asked the registry %d times, want 2 (missing and the default)", len(asked))
+	}
+}
+
+// A registry that can't be asked fails the dry run: it can't report "Up to
+// date" for a tag it couldn't check.
+func TestDryRunRegistryFailure(t *testing.T) {
+	l := derive(t, service("api", "registry/app:1", "", true))
+	l.Engine, l.Events = &fakeEngine{}, &recorder{}
+	o := refreshOptions{registryDigest: func(context.Context, string) (string, error) { return "", errors.New("unauthorized") }}
+	if _, err := refreshDryRun(context.Background(), l, l.Derived.Services, o); err == nil || !strings.Contains(err.Error(), "registry lookup for registry/app:1: unauthorized") {
+		t.Fatalf("%v, want the registry error", err)
 	}
 }
