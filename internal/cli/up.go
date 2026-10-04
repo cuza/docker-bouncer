@@ -177,10 +177,29 @@ func upPlainAndProxies(ctx context.Context, l *loaded, sel *types.Project) error
 // startStopped starts the Service's stopped replicas (after `stop`, or a host
 // restart) so they count as running: the planner drains old ones and keeps
 // current ones instead of waiting on them until bounce_health_timeout.
+//
+// A replica that was created but never started is removed instead: a run
+// died between creating it and running its revision's pre_start hooks, and
+// starting it would skip them. The bounce creates it again, hooks first.
 func startStopped(ctx context.Context, l *loaded, svc config.Service) error {
 	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc.Name)
-	if err != nil || !slices.ContainsFunc(reps, func(r engine.Replica) bool { return !r.Running }) {
+	if err != nil {
 		return err
+	}
+	stopped := false
+	for _, r := range reps {
+		switch {
+		case r.Running:
+		case r.Started.IsZero():
+			if err := l.Engine.Remove(ctx, r.ID); err != nil {
+				return err
+			}
+		default:
+			stopped = true
+		}
+	}
+	if !stopped {
+		return nil
 	}
 	p, err := l.Derived.Project.WithSelectedServices([]string{transform.AppName(svc.Name)}, types.IgnoreDependencies)
 	if err != nil {

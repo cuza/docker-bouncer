@@ -28,6 +28,7 @@ type fakeEngine struct {
 	manifests []string        // ImageManifests
 	hook      *engine.Replica // what Container returns
 	kept      []string        // RemoveKeepVolumes calls
+	removed   []string        // Remove calls
 	logs      string
 }
 
@@ -44,7 +45,10 @@ func (f *fakeEngine) RemoveKeepVolumes(_ context.Context, id string) error {
 func (f *fakeEngine) Logs(context.Context, string, int) (string, error) { return f.logs, nil }
 func (f *fakeEngine) Start(context.Context, string) error               { return nil }
 func (f *fakeEngine) Stop(context.Context, string) error                { return nil }
-func (f *fakeEngine) Remove(context.Context, string) error              { return nil }
+func (f *fakeEngine) Remove(_ context.Context, id string) error {
+	f.removed = append(f.removed, id)
+	return nil
+}
 func (f *fakeEngine) Exec(context.Context, string, []string, ...string) (string, error) {
 	return "", nil
 }
@@ -363,5 +367,23 @@ func TestPreStartHookIsAlwaysRemoved(t *testing.T) {
 				t.Fatalf("hook container not removed (keeping volumes): %v", fe.kept)
 			}
 		})
+	}
+}
+
+// A replica created but never started (a run died between creating it and
+// its pre_start hooks) is removed, so the bounce creates it again and runs
+// the hooks; a stopped one is started as before.
+func TestStartStoppedRemovesNeverStarted(t *testing.T) {
+	l := fakeLoaded(t)
+	fe := l.Engine.(*fakeEngine)
+	fe.reps = []engine.Replica{
+		{ID: "live", Running: true, Started: time.Now()},
+		{ID: "created"},
+	}
+	if err := startStopped(context.Background(), l, l.Derived.Services[0]); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fe.removed, []string{"created"}) {
+		t.Fatalf("removed %v, want the never-started replica", fe.removed)
 	}
 }
