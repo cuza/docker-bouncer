@@ -172,3 +172,18 @@ func TestMigratedAppStoresMigratedPayloads(t *testing.T) {
 		t.Fatalf("invocation %+v %v, want the migrated one, still an undo", inv, err)
 	}
 }
+
+// A malformed invocation label fails the migration instead of being
+// replaced by this run's (which would drop an undo hold).
+func TestMigratedAppRejectsBadInvocation(t *testing.T) {
+	l := derive(t, service("api", "registry/app:1", "", true))
+	cur, _, err := revision.Stamp(l.Derived.Project.Services["api-app"], nil, "u1", 10, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string(cur.Labels)
+	labels[transform.LabelInvocation] = "not base64!"
+	if _, err := migratedApp(l, l.Derived.Services[0], labels); err == nil || !strings.Contains(err.Error(), "invocation label") {
+		t.Fatalf("%v, want an invocation error", err)
+	}
+}

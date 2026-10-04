@@ -222,8 +222,11 @@ func migratedApp(l *loaded, svc config.Service, cur map[string]string) (types.Se
 		}
 	}
 	inv, ok, err := decodeInvocation(cur)
-	if err != nil || !ok {
-		inv = l.inv
+	if err != nil {
+		return app, fmt.Errorf("%s: invocation label: %w", svc.Name, err)
+	}
+	if !ok {
+		inv = l.inv // a replica from before invocations were recorded
 	}
 	stamp(&app, inv) // re-encoded; keeps an undo hold when there is one
 	return app, nil
