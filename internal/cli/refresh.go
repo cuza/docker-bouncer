@@ -498,9 +498,11 @@ func composeChange(ctx context.Context, l *loaded, s types.ServiceConfig, o refr
 }
 
 // registryMoved is ref@digest when the registry's image for s's tag is not
-// the local one; "" when it is, or there is nothing to ask.
+// the local one; "" when it is, or there is nothing to ask: what refreshPull
+// would not pull (--pull never, build:, a digest, pull_policy never or build).
 func registryMoved(ctx context.Context, l *loaded, id string, s types.ServiceConfig, o refreshOptions) string {
-	if o.pull == types.PullPolicyNever || s.Build != nil || strings.Contains(s.Image, "@") {
+	if o.pull == types.PullPolicyNever || s.Build != nil || strings.Contains(s.Image, "@") ||
+		s.PullPolicy == types.PullPolicyNever || s.PullPolicy == types.PullPolicyBuild {
 		return ""
 	}
 	named, err := reference.ParseNormalizedNamed(s.Image)

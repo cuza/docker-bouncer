@@ -168,3 +168,21 @@ func TestDryRunPlainAndProxies(t *testing.T) {
 		}
 	}
 }
+
+// The dry run asks the registry only for what refresh would pull.
+func TestRegistryMovedHonoursPullPolicy(t *testing.T) {
+	l := derive(t, service("api", "registry/app:1", "", false))
+	l.Engine, l.Events = &fakeEngine{}, &recorder{}
+	var asked []string
+	o := refreshOptions{registryDigest: func(_ context.Context, ref string) (string, error) {
+		asked = append(asked, ref)
+		return "sha256:1", nil
+	}}
+	for _, policy := range []string{types.PullPolicyNever, types.PullPolicyBuild, types.PullPolicyMissing, ""} {
+		s := service("api", "registry/app:1", policy, false)
+		registryMoved(context.Background(), l, "Service api", s, o)
+	}
+	if len(asked) != 2 {
+		t.Fatalf("asked the registry %d times, want 2 (missing and the default)", len(asked))
+	}
+}
