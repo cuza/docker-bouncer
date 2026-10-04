@@ -315,3 +315,21 @@ func TestRefreshInvocationOfAnotherProject(t *testing.T) {
 		t.Fatalf("refresh touched the other project: %v", ids)
 	}
 }
+
+// refresh -a starting a stopped plain service is a change, not "Up to date".
+func TestRefreshAllStartsStoppedPlain(t *testing.T) {
+	p := project(t, api(freePort(t), 1, fast)+`
+  worker:
+    image: bouncer-e2e-app:v1
+`)
+	p.mustUp()
+	worker := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.service=worker")
+	docker(t, "stop", worker[0])
+	out, code := p.refresh("", "-a", "--pull", "never")
+	if code != 0 || !strings.Contains(out, "Refreshed") {
+		t.Fatalf("refresh -a: %d\n%s", code, out)
+	}
+	if state := docker(t, "inspect", "-f", "{{.State.Status}}", worker[0]); state != "running" {
+		t.Fatalf("worker %s after refresh -a", state)
+	}
+}

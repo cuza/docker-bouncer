@@ -297,14 +297,14 @@ func refreshProject(ctx context.Context, dockerCli command.Cli, ev api.EventProc
 	changed := false
 	err = withLock(ctx, dockerCli, l, false, func() error {
 		if o.all {
-			before, err := plainIDs(ctx, dockerCli, name)
+			before, err := composeState(ctx, dockerCli, name)
 			if err == nil {
 				err = upPlainAndProxies(ctx, l, l.Derived.Project)
 			}
 			if err != nil {
 				return Exit(1, err)
 			}
-			after, err := plainIDs(ctx, dockerCli, name)
+			after, err := composeState(ctx, dockerCli, name)
 			changed = err != nil || !maps.Equal(before, after)
 		}
 		upID := time.Now().UTC().Format("20060102T150405Z")
@@ -361,9 +361,10 @@ func plainServices(l *loaded) []string {
 	return out
 }
 
-// plainIDs maps the project's plain containers to their IDs: a change after
-// Compose's up means one was created or recreated.
-func plainIDs(ctx context.Context, dockerCli command.Cli, project string) (map[string]string, error) {
+// composeState maps the project's containers that Compose's up converges
+// (plain services and proxies) to their ID and state: a change after it
+// means one was created, recreated or started.
+func composeState(ctx context.Context, dockerCli command.Cli, project string) (map[string]string, error) {
 	res, err := dockerCli.Client().ContainerList(ctx, client.ContainerListOptions{All: true,
 		Filters: client.Filters{}.Add("label", api.ProjectLabel+"="+project)})
 	if err != nil {
@@ -371,8 +372,8 @@ func plainIDs(ctx context.Context, dockerCli command.Cli, project string) (map[s
 	}
 	out := map[string]string{}
 	for _, c := range res.Items {
-		if c.Labels[transform.LabelRole] == "" && len(c.Names) > 0 {
-			out[c.Names[0]] = c.ID
+		if r := c.Labels[transform.LabelRole]; (r == "" || r == transform.RoleProxy) && len(c.Names) > 0 {
+			out[c.Names[0]] = c.ID + " " + string(c.State)
 		}
 	}
 	return out, nil
