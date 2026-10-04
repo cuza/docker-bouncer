@@ -39,6 +39,16 @@ func targets(svc config.Service) []int {
 	return out
 }
 
+// upgrades lets Upgrade requests (WebSocket and the like) through; Envoy
+// answers 403 to any type not listed.
+func upgrades(svc config.Service) []any {
+	var out []any
+	for _, u := range svc.Spec.UpgradeTypes {
+		out = append(out, obj{"upgrade_type": u})
+	}
+	return out
+}
+
 func SeedHost(svc config.Service) string { return svc.Name + "-app" }
 
 // Bootstrap is the proxy's static config. It never contains replica names:
@@ -61,6 +71,7 @@ func Bootstrap(svc config.Service) string {
 					"use_remote_address":           true,
 					"xff_num_trusted_hops":         1,
 					"preserve_external_request_id": true,
+					"upgrade_configs":              upgrades(svc),
 					"http_filters": []any{obj{
 						"name":         "envoy.filters.http.router",
 						"typed_config": obj{"@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"},

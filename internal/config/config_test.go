@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -168,5 +169,20 @@ func TestHistoryMaxBounds(t *testing.T) {
 		if _, err := Parse(svc(map[string]any{"history_max": n}, nil, "8080")); err == nil || !strings.Contains(err.Error(), "history_max") {
 			t.Errorf("history_max %d: got %v", n, err)
 		}
+	}
+}
+
+// websocket is always allowed; upgrade_types adds more, lowercased and deduplicated.
+func TestUpgradeTypes(t *testing.T) {
+	got, err := Parse(svc(map[string]any{}, nil, "8080"))
+	if err != nil || !slices.Equal(got.Spec.UpgradeTypes, []string{"websocket"}) {
+		t.Fatalf("default %v %v", got, err)
+	}
+	got, err = Parse(svc(map[string]any{"upgrade_types": []any{"Tailscale-Control-Protocol", "WebSocket", "DERP"}}, nil, "8080"))
+	if err != nil || !slices.Equal(got.Spec.UpgradeTypes, []string{"websocket", "tailscale-control-protocol", "derp"}) {
+		t.Fatalf("got %v %v", got, err)
+	}
+	if _, err := Parse(svc(map[string]any{"upgrade_types": []any{"", "a b"}}, nil, "8080")); err == nil || len(err.(*Error).Problems) != 2 {
+		t.Fatalf("empty and spaced types must be rejected: %v", err)
 	}
 }

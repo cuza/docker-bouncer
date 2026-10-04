@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ type Spec struct {
 	DrainHTTP           HTTPDrain
 	HistoryMax          int
 	ProxyImage          string
+	UpgradeTypes        []string // HTTP upgrades Envoy passes through: websocket plus upgrade_types
 }
 
 type Port struct {
@@ -91,8 +93,9 @@ type raw struct {
 		IsSafeToKill *HTTPCall `json:"is_safe_to_kill"`
 		StopDraining *HTTPCall `json:"stop_draining"`
 	} `json:"drain_method_params"`
-	HistoryMax *int    `json:"history_max"`
-	ProxyImage *string `json:"proxy_image"`
+	HistoryMax   *int     `json:"history_max"`
+	ProxyImage   *string  `json:"proxy_image"`
+	UpgradeTypes []string `json:"upgrade_types"`
 }
 
 // Parse returns nil, nil for a service without x-bouncer.
@@ -119,6 +122,7 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 		BounceMethod: MethodCrossover, MarginFactor: 0.95, OverprovisionFactor: 1.0,
 		MinTaskUptime: 10 * time.Second, HealthTimeout: 300 * time.Second, HealthPath: "/",
 		DrainMethod: DrainEnvoy, DrainDelay: 60 * time.Second, HistoryMax: 100, ProxyImage: DefaultProxyImage,
+		UpgradeTypes: []string{"websocket"},
 	}
 	dur := func(name string, v *string, into *time.Duration) {
 		if v == nil {
@@ -184,6 +188,15 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 	}
 	if r.ProxyImage != nil {
 		s.ProxyImage = *r.ProxyImage
+	}
+	for _, u := range r.UpgradeTypes {
+		// Envoy matches the Upgrade header without case; one HTTP token each.
+		u = strings.ToLower(u)
+		if u == "" || strings.ContainsAny(u, " \t,") {
+			bad("upgrade_types: %q is not an Upgrade header token", u)
+		} else if !slices.Contains(s.UpgradeTypes, u) {
+			s.UpgradeTypes = append(s.UpgradeTypes, u)
+		}
 	}
 	if svc.ContainerName != "" {
 		bad("container_name cannot be set on a bouncer service (it runs several replicas)")
