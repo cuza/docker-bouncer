@@ -1367,7 +1367,8 @@ services:
 }
 
 // A Service with platform: is pulled for that platform when the local copy
-// of its tag is another platform's.
+// of its tag is another platform's. The Service runs the host's platform and
+// only the local copy is foreign, so no emulation is needed.
 func TestPlatformPullsWhenOnlyAnotherIsLocal(t *testing.T) {
 	const image = "traefik/whoami:v1.11.0"
 	native, other := "linux/arm64", "linux/amd64"
@@ -1376,7 +1377,7 @@ func TestPlatformPullsWhenOnlyAnotherIsLocal(t *testing.T) {
 	}
 	exec.Command("docker", "rmi", "-f", image).Run()
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", image).Run() })
-	docker(t, "pull", "-q", "--platform", native, image)
+	docker(t, "pull", "-q", "--platform", other, image)
 	port := freePort(t)
 	p := project(t, fmt.Sprintf(`
 services:
@@ -1385,7 +1386,7 @@ services:
     platform: %s
     ports: ["127.0.0.1:%d:80"]
     x-bouncer: { %s }
-`, image, other, port, fast))
+`, image, native, port, fast))
 	p.mustUp()
 	mustGet(t, url(port, "/"))
 	reps := p.replicas("api")
@@ -1394,7 +1395,7 @@ services:
 	}
 	// The manifest a container runs is known with the containerd image store.
 	got := docker(t, "inspect", "-f", "{{with .ImageManifestDescriptor}}{{.Platform.OS}}/{{.Platform.Architecture}}{{end}}", reps[0])
-	if got != "" && got != other {
-		t.Fatalf("replica runs %s, want %s", got, other)
+	if got != "" && got != native {
+		t.Fatalf("replica runs %s, want %s", got, native)
 	}
 }
