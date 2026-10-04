@@ -21,8 +21,9 @@ import (
 )
 
 type fakeEngine struct {
-	reps []engine.Replica
-	id   string // ImageID's answer; "sha256:<ref>" when empty
+	reps    []engine.Replica
+	id      string   // Image's ID; "sha256:<ref>" when empty
+	digests []string // Image's repo digests
 }
 
 func (f *fakeEngine) Replicas(context.Context, string, string) ([]engine.Replica, error) {
@@ -37,11 +38,11 @@ func (f *fakeEngine) Exec(context.Context, string, []string, ...string) (string,
 	return "", nil
 }
 func (f *fakeEngine) Wait(context.Context, string, time.Duration) {}
-func (f *fakeEngine) ImageID(_ context.Context, ref string) (string, error) {
+func (f *fakeEngine) Image(_ context.Context, ref string) (string, []string, error) {
 	if f.id != "" {
-		return f.id, nil
+		return f.id, f.digests, nil
 	}
-	return "sha256:" + ref, nil
+	return "sha256:" + ref, f.digests, nil
 }
 
 func fakeLoaded(t *testing.T) *loaded {
@@ -73,23 +74,95 @@ func TestDesiredAppReusesRunningRevision(t *testing.T) {
 	}
 }
 
-// A built Service's replicas run the image ID, so a rebuild is a new revision.
-func TestDesiredAppPinsBuiltImage(t *testing.T) {
-	svc := service("api", "", "", true)
-	svc.Build = &types.BuildConfig{Context: "."}
-	l := derive(t, svc)
-	l.Engine = &fakeEngine{}
-	app, err := desiredApp(context.Background(), l, l.Derived.Services[0], "u1")
-	if err != nil || app.Image != "sha256:proj-api" {
-		t.Fatalf("image %q %v", app.Image, err)
+const (
+	d1 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	d2 = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+)
+
+// pinImage keeps the reference and labels the exact image: repo@digest for
+// the reference's repository, else the image ID; a digest as written; always
+// the ID for a build.
+func TestPinImage(t *testing.T) {
+	ctx := context.Background()
+	l := derive(t, service("api", "vaultwarden/server:latest", "", true))
+	fe := &fakeEngine{}
+	l.Engine = fe
+	app := l.Derived.Project.Services["api-app"]
+	pin := func(app types.ServiceConfig) string {
+		t.Helper()
+		got, err := pinImage(ctx, l, app)
+		if err != nil || got.Image != app.Image {
+			t.Fatalf("image %q %v, want %q kept", got.Image, err, app.Image)
+		}
+		return got.Labels[labelImage]
 	}
-	l.Engine.(*fakeEngine).reps = []engine.Replica{{Name: "proj-api-app-1", Running: true, Labels: app.Labels}}
-	if again, _ := desiredApp(context.Background(), l, l.Derived.Services[0], "u2"); again.Labels[revision.LabelRevision] != "1" {
-		t.Fatal("the same image is the same revision")
+	fe.digests = []string{"other/mirror@" + d2, "docker.io/vaultwarden/server@" + d1}
+	if got := pin(app); got != "vaultwarden/server@"+d1 {
+		t.Fatalf("repo digest: %q", got)
 	}
-	l.Engine.(*fakeEngine).id = "sha256:rebuilt"
-	if next, _ := desiredApp(context.Background(), l, l.Derived.Services[0], "u3"); next.Labels[revision.LabelRevision] != "2" || next.Image != "sha256:rebuilt" {
-		t.Fatalf("a rebuilt image is a new revision: %v %q", next.Labels[revision.LabelRevision], next.Image)
+	fe.digests = []string{"other/mirror@" + d2} // only tagged locally, or pulled from elsewhere
+	if got := pin(app); got != "sha256:vaultwarden/server:latest" {
+		t.Fatalf("local image: %q", got)
+	}
+	digested := app
+	digested.Image = "registry:3.1.1@sha256:1be5"
+	if got := pin(digested); got != digested.Image {
+		t.Fatalf("a digest in the file is exact as written: %q", got)
+	}
+	built := app
+	built.Image, built.Build = "proj-api", &types.BuildConfig{Context: "."}
+	fe.digests = []string{"proj-api@" + d1}
+	if got := pin(built); got != "sha256:proj-api" {
+		t.Fatalf("a build pins its image ID: %q", got)
+	}
+	if _, leaked := l.Derived.Project.Services["api-app"].Labels[labelImage]; leaked {
+		t.Fatal("pinImage must not write into the derived project")
+	}
+}
+
+// The spec hash changes only when the reference resolves to another image:
+// a moved tag or a rebuild is a new revision, the same image is not.
+func TestDesiredAppBouncesOnlyOnNewImage(t *testing.T) {
+	for name, svc := range map[string]types.ServiceConfig{
+		"pulled": service("api", "registry/api:latest", "", true),
+		"built":  service("api", "", "", true),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if name == "built" {
+				svc.Build = &types.BuildConfig{Context: "."}
+			}
+			l := derive(t, svc)
+			fe := &fakeEngine{id: "sha256:old", digests: []string{"registry/api@" + d1}}
+			l.Engine = fe
+			up := func(upID, wantRev string) types.ServiceConfig {
+				t.Helper()
+				app, err := desiredApp(context.Background(), l, l.Derived.Services[0], upID)
+				if err != nil || app.Labels[revision.LabelRevision] != wantRev || app.Image != l.Derived.Project.Services["api-app"].Image {
+					t.Fatalf("%s: revision %q image %q %v, want revision %s and the reference kept", upID, app.Labels[revision.LabelRevision], app.Image, err, wantRev)
+				}
+				fe.reps = []engine.Replica{{Name: "proj-api-app-1", Running: true, Labels: app.Labels}}
+				return app
+			}
+			up("u1", "1")
+			up("u2", "1") // same image
+			fe.id, fe.digests = "sha256:new", []string{"registry/api@" + d2}
+			if app := up("u3", "2"); name == "built" && app.Labels[labelImage] != "sha256:new" {
+				t.Fatalf("rebuilt image %q", app.Labels[labelImage])
+			}
+		})
+	}
+}
+
+// A restored spec runs its exact image; one stored before pinning, its reference.
+func TestRunImage(t *testing.T) {
+	var app types.ServiceConfig
+	app.Image, app.Labels = "registry/api:1", types.Labels{labelImage: "registry/api@" + d1}
+	if got := runImage(app); got != "registry/api@"+d1 {
+		t.Fatal(got)
+	}
+	app.Labels = nil
+	if got := runImage(app); got != "registry/api:1" {
+		t.Fatal(got)
 	}
 }
 

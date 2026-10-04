@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -72,7 +73,14 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 					return Exit(1, fmt.Errorf("%s: revision %d: %w", svc.Name, target.Revision, err))
 				}
 				plans[svc.Name] = plan{app, target, fileRevision(ctx, l, svc, h)}
-				pulls[app.Name] = app
+				// The revision runs its exact image: a repo@digest is pulled when
+				// missing, an image ID no registry serves must still be local.
+				run := app
+				run.Image = runImage(app)
+				if strings.HasPrefix(run.Image, "sha256:") && !imagePresent(dockerCli)(ctx, run.Image) {
+					return Exit(1, fmt.Errorf("%s: revision %d ran image %s (%s), which is no longer local; build or pull it again", svc.Name, target.Revision, run.Image, app.Image))
+				}
+				pulls[app.Name] = run
 			}
 			if len(plans) == 0 {
 				return Exit(1, fmt.Errorf("nothing to undo"))
@@ -106,6 +114,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 						return types.ServiceConfig{}, fmt.Errorf("%s: revisions changed while undo started; run it again", svc.Name)
 					}
 					app, kept, err := revision.Stamp(p.app, cur, upID, svc.Spec.HistoryMax, time.Now())
+					app.Image = runImage(p.app) // the spec keeps the reference; the replicas run the exact image
 					if err == nil {
 						warnTrimmed(l, svc, kept)
 						l.event("Service "+svc.Name, api.Warning, fmt.Sprintf("Revision %s = copy of %d:", app.Labels[revision.LabelRevision], p.target.Revision),
@@ -139,7 +148,7 @@ func restore(l *loaded, svc config.Service, e revision.Entry) (types.ServiceConf
 // fileRevision is the newest stored revision the compose file describes; the
 // current one when the file matches none.
 func fileRevision(ctx context.Context, l *loaded, svc config.Service, h []revision.Entry) int {
-	app, err := pinBuilt(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
+	app, err := pinImage(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
 	if err != nil {
 		return h[0].Revision
 	}

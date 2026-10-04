@@ -17,6 +17,7 @@ import (
 	"github.com/cuza/docker-bouncer/internal/lock"
 	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/cuza/docker-bouncer/internal/transform"
+	"github.com/distribution/reference"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
@@ -60,7 +61,7 @@ unchanged one is a cached no-op. --no-build skips building.`,
 			}
 			return withLock(ctx, dockerCli, l, forceUnlock, func() error {
 				// 0. Build under the lock, so a concurrent up cannot retag the
-				// image before pinBuilt resolves it.
+				// image before pinImage resolves it.
 				if !noBuild {
 					if err := build(ctx, l, sel, pull == types.PullPolicyAlways); err != nil {
 						return Exit(2, err)
@@ -211,7 +212,7 @@ func current(ctx context.Context, l *loaded, svc string) (map[string]string, err
 // desiredApp: the file's replica config, stamped as a new revision only when
 // it differs from what runs.
 func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string) (types.ServiceConfig, error) {
-	app, err := pinBuilt(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
+	app, err := pinImage(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
 	if err != nil {
 		return app, err
 	}
@@ -356,19 +357,63 @@ func original(l *loaded, name string) string {
 	return name
 }
 
-// pinBuilt points a built replica service at the image ID its build made, so
-// a rebuilt image is a new spec hash (a bounce) and undo restores that exact
-// image, as Compose's image-digest label marks a container outdated.
-func pinBuilt(ctx context.Context, l *loaded, app types.ServiceConfig) (types.ServiceConfig, error) {
-	if app.Build == nil {
-		return app, nil
+// labelImage is the exact image a replica's reference resolved to when its
+// spec was made: part of the spec, so part of its hash.
+const labelImage = transform.LabelPrefix + "image"
+
+// pinImage labels a replica service with the exact image its reference names
+// now, so a new image under the same reference (a rebuild, a pull of a moved
+// tag) is a new spec hash, so a bounce, and undo can run that image again,
+// as Compose's image-digest label marks a container outdated. The replica
+// keeps the reference as written, so containers, ps and history stay
+// readable. The exact image is repo@digest when the image has a digest for
+// the reference's repository (undo can pull it again); else, for a built or
+// locally tagged image, its image ID. A reference with a digest is exact as
+// written.
+func pinImage(ctx context.Context, l *loaded, app types.ServiceConfig) (types.ServiceConfig, error) {
+	exact := app.Image
+	if app.Build != nil || !strings.Contains(app.Image, "@") {
+		id, digests, err := l.Engine.Image(ctx, app.Image)
+		if err != nil {
+			return app, fmt.Errorf("%s: %w", app.Name, err)
+		}
+		exact = id
+		if d := repoDigest(app.Image, digests); app.Build == nil && d != "" {
+			exact = d
+		}
 	}
-	id, err := l.Engine.ImageID(ctx, app.Image)
-	if err != nil {
-		return app, fmt.Errorf("%s: %w", app.Name, err)
-	}
-	app.Image = id
+	labels := types.Labels{}
+	maps.Copy(labels, app.Labels) // never write into the shared derived project
+	labels[labelImage] = exact
+	app.Labels = labels
 	return app, nil
+}
+
+// repoDigest is ref's repository @ the digest under which it holds the
+// image, or "" when that registry never served it (built or only tagged
+// locally).
+func repoDigest(ref string, repoDigests []string) string {
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return ""
+	}
+	for _, rd := range repoDigests {
+		if c, err := reference.ParseNormalizedNamed(rd); err == nil && c.Name() == named.Name() {
+			if d, ok := c.(reference.Digested); ok {
+				return reference.FamiliarName(named) + "@" + d.Digest().String()
+			}
+		}
+	}
+	return ""
+}
+
+// runImage is the image a stored spec runs: the exact one it was pinned to,
+// or, for a spec stored before pinning, its reference.
+func runImage(app types.ServiceConfig) string {
+	if exact := app.Labels[labelImage]; exact != "" {
+		return exact
+	}
+	return app.Image
 }
 
 func imagePresent(dockerCli command.Cli) func(context.Context, string) bool {

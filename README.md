@@ -75,7 +75,10 @@ proxy appends the caller's address to `X-Forwarded-For` and keeps an incoming
 `X-Forwarded-Proto`, and passes WebSocket upgrades (plus any listed in
 `x-bouncer.upgrade_types`). A
 lock container `<project>-bouncer-lock`, created but never started, keeps two
-runs apart.
+runs apart. Each revision records the exact image its reference named
+(`repo@digest`, or the image ID of a built or local image), so a tag that
+moved to a new image, or a rebuild, bounces, and `undo` runs the old image
+again.
 
 ## Commands
 
@@ -88,7 +91,7 @@ prefixes `plain` lines with an RFC 3339 UTC time.
 | Command | Does |
 |---|---|
 | `up [SERVICE…] [--pull …] [--no-build] [--force-unlock] [-d] [--wait]` | Pull, build every `build:` service, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait`, `--build` accepted for compatibility) |
-| `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision |
+| `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision, and its exact image |
 | `history SERVICE` | Stored revisions |
 | `ps` | Containers with role and revision |
 | `ls` | Projects with Services on this host |

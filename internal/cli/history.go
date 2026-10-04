@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -31,6 +32,10 @@ func historyCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				img := "?"
 				if spec, err := revision.Decode(e.Spec); err == nil {
 					img = spec.Image
+					// The exact image, shortened: a digest or an image ID.
+					if _, h, ok := strings.Cut(spec.Labels[labelImage], "sha256:"); ok {
+						img += " (" + h[:min(12, len(h))] + ")"
+					}
 				}
 				mark := ""
 				if i == 0 {
