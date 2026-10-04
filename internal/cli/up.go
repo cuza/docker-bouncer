@@ -192,18 +192,20 @@ func startStopped(ctx context.Context, l *loaded, svc config.Service) error {
 	return nil
 }
 
-// current returns the labels of a running replica of the newest revision.
+// current returns the labels of the newest running replica of the newest
+// revision: replicas scaled up later carry the later run's invocation.
 func current(ctx context.Context, l *loaded, svc string) (map[string]string, error) {
 	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc)
 	if err != nil {
 		return nil, err
 	}
 	var best map[string]string
+	var bestCreated time.Time
 	bestRev := -1
 	for _, r := range reps {
 		rev, _ := strconv.Atoi(r.Labels[revision.LabelRevision])
-		if r.Running && rev > bestRev {
-			best, bestRev = r.Labels, rev
+		if r.Running && (rev > bestRev || rev == bestRev && r.Created.After(bestCreated)) {
+			best, bestRev, bestCreated = r.Labels, rev, r.Created
 		}
 	}
 	return best, nil
@@ -231,10 +233,14 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 				app.Labels[k] = v
 			}
 		}
+		app.Labels[transform.LabelInvocation] = l.inv.encode() // outside the hash: replicas scaled up now record this run
 		return app, nil
 	}
 	app, kept, err := revision.Stamp(app, cur, upID, svc.Spec.HistoryMax, time.Now())
-	warnTrimmed(l, svc, kept)
+	if err == nil {
+		warnTrimmed(l, svc, kept)
+		app.Labels[transform.LabelInvocation] = l.inv.encode()
+	}
 	return app, err
 }
 

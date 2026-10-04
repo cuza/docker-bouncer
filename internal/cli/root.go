@@ -63,7 +63,7 @@ func NewRoot(dockerCli command.Cli) *cobra.Command {
 // addCommands registers every subcommand.
 func addCommands(root *cobra.Command, dockerCli command.Cli, pf *ProjectFlags) {
 	root.AddCommand(upCmd(dockerCli, pf), pullCmd(dockerCli, pf), stopCmd(dockerCli, pf), downCmd(dockerCli, pf), configCmd(dockerCli, pf),
-		historyCmd(dockerCli, pf), logsCmd(dockerCli, pf), psCmd(dockerCli, pf), lsCmd(dockerCli), undoCmd(dockerCli, pf), versionCmd())
+		historyCmd(dockerCli, pf), logsCmd(dockerCli, pf), psCmd(dockerCli, pf), lsCmd(dockerCli), undoCmd(dockerCli, pf), refreshCmd(dockerCli, pf), versionCmd())
 }
 
 func versionCmd() *cobra.Command {

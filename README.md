@@ -92,6 +92,7 @@ prefixes `plain` lines with an RFC 3339 UTC time.
 |---|---|
 | `up [SERVICE…] [--pull …] [--no-build] [--force-unlock] [-d] [--wait]` | Pull, build every `build:` service, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait`, `--build` accepted for compatibility) |
 | `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision, and its exact image |
+| `refresh [PROJECT…] [-a] [--dry-run] [--pull never]` | For every project with Services on this host (or the named ones): pull tags that moved and bounce, loading each project as its last `up` did; `-a` also recreates plain services whose image changed |
 | `history SERVICE` | Stored revisions |
 | `ps` | Containers with role and revision |
 | `ls` | Projects with Services on this host: revision, replicas, status (`converged`, `drifted`, `bouncing`, `stopped`) and compose files |
@@ -102,6 +103,23 @@ prefixes `plain` lines with an RFC 3339 UTC time.
 | `down` | Remove the project and its revision history, including the proxies and replicas of Services in inactive profiles (plain services in inactive profiles keep running, as with `docker compose down`) |
 | `version [--short]` (or `--version`) | Show the version, plus the Compose library and default Envoy image it is built on |
 
+### Replacing Watchtower
+
+`refresh` needs no compose file or directory: every `up` records on its
+replicas how it loaded the project (files, project directory, env file paths,
+profiles), and `refresh` loads it the same way. A tag that moved is pulled and
+bounced with health checks and no downtime; an unchanged one is a no-op. A
+Service that `undo` rolled back is held there until the next `up`. Without
+`-a`, plain services and proxies are never touched; with it they converge as
+`docker compose up` would.
+
+```sh
+*/15 * * * * docker bouncer refresh --progress plain --timestamps >> /var/log/bouncer-refresh.log 2>&1
+```
+
+Variables the compose files took from your shell at `up` are not replayed:
+put them in an env file. `refresh --dry-run` shows what would change.
+
 ## Documentation
 
 The [wiki](https://github.com/cuza/docker-bouncer/wiki) has the details:
@@ -110,7 +128,7 @@ The [wiki](https://github.com/cuza/docker-bouncer/wiki) has the details:
 - [Configuration](https://github.com/cuza/docker-bouncer/wiki/Configuration): every `x-bouncer` key
 - [Bounce methods](https://github.com/cuza/docker-bouncer/wiki/Bounce-methods): animations, surge and margin
 - [Draining and health](https://github.com/cuza/docker-bouncer/wiki/Draining-and-health)
-- [Operations](https://github.com/cuza/docker-bouncer/wiki/Operations): `up`, `undo`, locks, reboots, output and CI
+- [Operations](https://github.com/cuza/docker-bouncer/wiki/Operations): `up`, `undo`, `refresh`, locks, reboots, output and CI
 - [Troubleshooting](https://github.com/cuza/docker-bouncer/wiki/Troubleshooting): exit codes, known gaps
 - [How it works](https://github.com/cuza/docker-bouncer/wiki/How-it-works): derived services, labels, Envoy
 

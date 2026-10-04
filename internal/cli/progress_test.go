@@ -73,3 +73,13 @@ func TestJSONEvents(t *testing.T) {
 		}
 	}
 }
+
+// Every object has project, "" for refresh's summary across projects.
+func TestJSONSummaryHasProject(t *testing.T) {
+	var b bytes.Buffer
+	j := &jsonEvents{out: &b, now: func() time.Time { return t0 }}
+	j.On(api.Resource{ID: "Refresh", Status: api.Done, Text: "2 projects: 2 up to date"})
+	if !bytes.Contains(b.Bytes(), []byte(`"project":""`)) {
+		t.Fatalf("%s", b.String())
+	}
+}

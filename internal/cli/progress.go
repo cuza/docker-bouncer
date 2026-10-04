@@ -85,7 +85,7 @@ type jsonEvents struct {
 
 type jsonEvent struct {
 	Time     string `json:"time"`
-	Project  string `json:"project,omitempty"`
+	Project  string `json:"project"` // "" for a summary across projects
 	Service  string `json:"service,omitempty"`
 	Replica  string `json:"replica,omitempty"`
 	ID       string `json:"id,omitempty"`
@@ -108,6 +108,14 @@ func setProject(ep api.EventProcessor, r *transform.Result) {
 	j.project, j.services = r.Project.Name, map[string]string{}
 	for _, s := range r.Services {
 		j.services[s.Name], j.services[transform.AppName(s.Name)] = s.Name, s.Name
+	}
+}
+
+// forProject points a json display at one project before it is loaded
+// (refresh), or at none ("") for a summary across projects.
+func forProject(ep api.EventProcessor, name string) {
+	if j, ok := ep.(*jsonEvents); ok {
+		j.project, j.services = name, nil
 	}
 }
 

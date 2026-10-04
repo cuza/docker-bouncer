@@ -44,7 +44,7 @@ const (
 )
 
 var revisionLabel = map[string]bool{LabelRevision: true, LabelSpec: true, LabelSpecHash: true,
-	LabelHistory: true, LabelUpID: true, LabelTime: true}
+	LabelHistory: true, LabelUpID: true, LabelTime: true, transform.LabelInvocation: true}
 
 // The `raw` env_file format is registered by the docker compose CLI, not by
 // compose-go; register the same parser (docker run --env-file semantics).

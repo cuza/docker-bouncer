@@ -22,6 +22,9 @@ const (
 	LabelRole      = LabelPrefix + "role"
 	LabelService   = LabelPrefix + "service"
 	LabelAdminPort = LabelPrefix + "admin-port"
+	// LabelInvocation records how a replica's up or undo loaded its project,
+	// so refresh can load it the same way.
+	LabelInvocation = LabelPrefix + "invocation"
 
 	RoleProxy   = "proxy"
 	RoleReplica = "replica"

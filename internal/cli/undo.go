@@ -116,6 +116,9 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 					app, kept, err := revision.Stamp(p.app, cur, upID, svc.Spec.HistoryMax, time.Now())
 					app.Image = runImage(p.app) // the spec keeps the reference; the replicas run the exact image
 					if err == nil {
+						inv := l.inv
+						inv.Command, inv.Revision = "undo", p.target.Revision // refresh holds the Service here
+						app.Labels[transform.LabelInvocation] = inv.encode()
 						warnTrimmed(l, svc, kept)
 						l.event("Service "+svc.Name, api.Warning, fmt.Sprintf("Revision %s = copy of %d:", app.Labels[revision.LabelRevision], p.target.Revision),
 							fmt.Sprintf("the compose file still describes revision %d, the next up rolls forward", p.file))

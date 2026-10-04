@@ -25,6 +25,7 @@ type loaded struct {
 	Engine  engine.Engine
 	Events  api.EventProcessor // the --progress display
 	mu      *sync.Mutex        // one Compose call at a time; bounce loops stay parallel
+	inv     invocation         // how this run loaded the project
 }
 
 func load(ctx context.Context, dockerCli command.Cli, pf *ProjectFlags) (*loaded, error) {
@@ -32,6 +33,12 @@ func load(ctx context.Context, dockerCli command.Cli, pf *ProjectFlags) (*loaded
 	if err != nil {
 		return nil, err
 	}
+	return loadWith(ctx, dockerCli, pf, ev)
+}
+
+// loadWith loads the project into an existing display (refresh shares one
+// across projects).
+func loadWith(ctx context.Context, dockerCli command.Cli, pf *ProjectFlags, ev api.EventProcessor) (*loaded, error) {
 	c, err := compose.NewComposeService(dockerCli, compose.WithEventProcessor(inner{ev}))
 	if err != nil {
 		return nil, err
@@ -56,7 +63,7 @@ func load(ctx context.Context, dockerCli command.Cli, pf *ProjectFlags) (*loaded
 		d.Project.Services[proxy.Name], d.Project.Services[app.Name] = proxy, app
 	}
 	setProject(ev, d)
-	return &loaded{Compose: c, Project: p, Derived: d, Engine: engine.NewDocker(dockerCli.Client()), Events: ev, mu: &sync.Mutex{}}, nil
+	return &loaded{Compose: c, Project: p, Derived: d, Engine: engine.NewDocker(dockerCli.Client()), Events: ev, mu: &sync.Mutex{}, inv: newInvocation(p, pf)}, nil
 }
 
 func appNames(l *loaded) []string {
