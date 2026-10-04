@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"time"
 
@@ -98,13 +99,28 @@ func (d *docker) RemoveKeepVolumes(ctx context.Context, id string) error {
 }
 
 func (d *docker) Logs(ctx context.Context, id string, tail int) (string, error) {
+	in, err := d.c.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if err != nil {
+		return "", err
+	}
 	rc, err := d.c.ContainerLogs(ctx, id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Tail: strconv.Itoa(tail)})
 	if err != nil {
 		return "", err
 	}
 	defer rc.Close()
+	return readLogs(rc, in.Container.Config != nil && in.Container.Config.Tty)
+}
+
+// readLogs reads a log stream: raw for a TTY container, else stdout and
+// stderr multiplexed.
+func readLogs(r io.Reader, tty bool) (string, error) {
 	var out bytes.Buffer
-	_, err = stdcopy.StdCopy(&out, &out, rc)
+	var err error
+	if tty {
+		_, err = io.Copy(&out, r)
+	} else {
+		_, err = stdcopy.StdCopy(&out, &out, r)
+	}
 	return out.String(), err
 }
 
