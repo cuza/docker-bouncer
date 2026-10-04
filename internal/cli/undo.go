@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -70,7 +71,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				if err != nil {
 					return Exit(1, fmt.Errorf("%s: revision %d: %w", svc.Name, target.Revision, err))
 				}
-				plans[svc.Name] = plan{app, target, fileRevision(l, svc, h)}
+				plans[svc.Name] = plan{app, target, fileRevision(ctx, l, svc, h)}
 				pulls[app.Name] = app
 			}
 			if len(plans) == 0 {
@@ -137,8 +138,12 @@ func restore(l *loaded, svc config.Service, e revision.Entry) (types.ServiceConf
 
 // fileRevision is the newest stored revision the compose file describes; the
 // current one when the file matches none.
-func fileRevision(l *loaded, svc config.Service, h []revision.Entry) int {
-	spec, _, err := revision.Encode(l.Derived.Project.Services[transform.AppName(svc.Name)])
+func fileRevision(ctx context.Context, l *loaded, svc config.Service, h []revision.Entry) int {
+	app, err := pinBuilt(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
+	if err != nil {
+		return h[0].Revision
+	}
+	spec, _, err := revision.Encode(app)
 	if err == nil {
 		for _, e := range h {
 			if bytes.Equal(e.Spec, spec) {

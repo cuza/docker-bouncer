@@ -117,8 +117,9 @@ func TestRunFailsAndKeepsOldServing(t *testing.T) {
 	w := newWorld("old", 1)
 	w.newHealthy = false // new replicas never pass Envoy's check
 	r := w.runner(config.MethodCrossover, 1, "new")
+	r.Svc.Spec.HealthPath, r.Svc.Spec.HealthStrict = "/nope", true
 	err := r.Run(context.Background())
-	if !errors.Is(err, ErrFailed) {
+	if !errors.Is(err, ErrFailed) || !strings.HasSuffix(err.Error(), "api: new replica proj-api-app-2 never passed GET /nope (expects 2xx) within "+r.Svc.Spec.HealthTimeout.String()+" (last answer: HTTP 200)") {
 		t.Fatalf("got %v", err)
 	}
 	if got := w.hashes(); len(got) != 1 || got[0] != "old" {

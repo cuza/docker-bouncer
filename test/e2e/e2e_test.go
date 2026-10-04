@@ -161,8 +161,12 @@ func TestNeverHealthyFailsAndOldServes(t *testing.T) {
 	p := project(t, api(port, 2, `min_task_uptime: 1s, bounce_health_timeout: 15s, healthcheck: { uri: /health }, drain_method_params: { delay: 2s }`))
 	p.mustUp()
 	p.write(strings.Replace(p.yaml, "image: bouncer-e2e-app:v1", "image: bouncer-e2e-app:v2\n    environment: { UNHEALTHY: \"1\" }", 1))
-	if out, code := p.bouncer("up"); code != 1 {
+	out, code := p.bouncer("up")
+	if code != 1 {
 		t.Fatalf("bounce of a never-healthy version: exit %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "never passed GET /health (expects 2xx) within 15s (last answer: HTTP 503)") {
+		t.Fatalf("the failure must name the check:\n%s", out)
 	}
 	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "v1") {
 		t.Fatalf("GET / = %q", body)
@@ -842,5 +846,204 @@ services:
 	t.Logf("web replicas stopped by %s, api proxy and replicas from %s", webLast.Format(time.StampMicro), apiFirst.Format(time.StampMicro))
 	if !webLast.Before(apiFirst) {
 		t.Fatal("web replicas must stop before api's proxy and replicas")
+	}
+}
+
+// A build-only Service is built on the first up, and a changed build arg or
+// Dockerfile is a new image and so a bounce, without a failed request.
+func TestBuildService(t *testing.T) {
+	port := freePort(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    build: { context: ./ctx, args: { V: one } }
+    deploy: { replicas: 2 }
+    ports: ["127.0.0.1:%d:8080"]
+    x-bouncer: { %s, drain_method_params: { delay: 2s } }
+`, port, fast))
+	t.Cleanup(func() { exec.Command("docker", "image", "prune", "-af", "--filter", "label=bouncer-e2e="+p.name).Run() })
+	dockerfile := filepath.Join(p.dir, "ctx", "Dockerfile")
+	if err := os.MkdirAll(filepath.Dir(dockerfile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL bouncer-e2e="+p.name+"\nARG V\nENV VERSION=$V\n")
+	p.mustUp()
+	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "one") {
+		t.Fatalf("GET / = %q", body)
+	}
+	bounce := func(want string) {
+		t.Helper()
+		stop := make(chan struct{})
+		res := load(t, url(port, "/"), stop)
+		if out, code := p.bouncer("up"); code != 0 {
+			t.Fatalf("bounce to %s: %d\n%s", want, code, out)
+		}
+		close(stop)
+		if r := <-res; r.failures != 0 || r.total == 0 {
+			t.Fatalf("%d failed requests out of %d: %v", r.failures, r.total, r.samples)
+		}
+		if body := mustGet(t, url(port, "/")); !strings.Contains(body, want) {
+			t.Fatalf("GET / = %q, want %s", body, want)
+		}
+	}
+	p.write(strings.Replace(p.yaml, "V: one", "V: two", 1))
+	bounce("two")
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL bouncer-e2e="+p.name+"\nENV VERSION=three\n")
+	bounce("three")
+	if h := p.history("api"); len(h) != 3 {
+		t.Fatalf("history: %q", h)
+	}
+	before := p.replicas("api")
+	if out, code := p.bouncer("up"); code != 0 || !slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("an unchanged build must not bounce: %d\n%s", code, out)
+	}
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nRUN exit 1\n")
+	if out, code := p.bouncer("up"); code != 2 || !slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("a failed build: exit %d, want 2 and no change\n%s", code, out)
+	}
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A drained replica's anonymous volumes go with it.
+func TestAnonymousVolumesDoNotLeak(t *testing.T) {
+	p := project(t, api(freePort(t), 2, fast+`, drain_method_params: { delay: 1s }`))
+	image := "bouncer-e2e-vol:" + p.name[len("bouncer-e2e-"):]
+	build := exec.Command("docker", "build", "-q", "-t", image, "-")
+	build.Stdin = strings.NewReader("FROM bouncer-e2e-app:v1\nVOLUME /data\n")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { exec.Command("docker", "rmi", image).Run() })
+	p.write(strings.Replace(p.yaml, "bouncer-e2e-app:v1", image, 1))
+	p.mustUp()
+	seen := map[string]bool{}
+	mounted := func() {
+		for _, id := range p.replicas("api") {
+			for _, v := range strings.Fields(docker(t, "inspect", "-f", `{{range .Mounts}}{{.Name}} {{end}}`, id)) {
+				seen[v] = true
+			}
+		}
+	}
+	mounted()
+	base := p.yaml
+	for _, v := range []string{"1", "2"} {
+		p.write(strings.Replace(base, "x-bouncer:", "environment: { N: \""+v+"\" }\n    x-bouncer:", 1))
+		p.mustUp()
+		mounted()
+	}
+	live := map[string]bool{}
+	for _, id := range p.replicas("api") {
+		for _, v := range strings.Fields(docker(t, "inspect", "-f", `{{range .Mounts}}{{.Name}} {{end}}`, id)) {
+			live[v] = true
+		}
+	}
+	if len(seen) != 6 || len(live) != 2 {
+		t.Fatalf("volumes seen %d, live %d; want 6 and 2", len(seen), len(live))
+	}
+	for v := range seen {
+		if !live[v] && exec.Command("docker", "volume", "inspect", v).Run() == nil {
+			t.Errorf("volume %s of a drained replica still exists", v)
+		}
+	}
+	if out, code := p.bouncer("down"); code != 0 {
+		t.Fatalf("down: %d\n%s", code, out)
+	}
+	for v := range live {
+		exec.Command("docker", "volume", "rm", v).Run()
+	}
+}
+
+// Sharing a namespace or volumes with a Service is rejected before anything runs.
+func TestServiceNamespaceReferencesRejected(t *testing.T) {
+	for name, tc := range map[string]struct{ api, other, want string }{
+		"host":         {"network_mode: host", "", "network_mode host cannot be set on a bouncer service"},
+		"none":         {"network_mode: none", "", "network_mode none cannot be set on a bouncer service"},
+		"network_mode": {"", "network_mode: service:api", "network_mode service:api points at api's proxy"},
+		"ipc":          {"", "ipc: service:api", "ipc service:api points at api's proxy"},
+		"pid":          {"", "pid: service:api", "pid service:api points at api's proxy"},
+		"volumes_from": {"", "volumes_from: [api]", "volumes_from api points at api's proxy"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: bouncer-e2e-app:v1
+    expose: ["8080"]
+    %s
+    x-bouncer: {}
+  other:
+    image: alpine:3.22
+    command: ["sleep", "infinity"]
+    %s
+`, tc.api, tc.other))
+			out, code := p.bouncer("up")
+			if code != 2 || !strings.Contains(out, tc.want) {
+				t.Fatalf("exit %d, want 2 and %q\n%s", code, tc.want, out)
+			}
+			if ids := p.containers("com.docker.compose.project=" + p.name); len(ids) != 0 {
+				t.Fatalf("containers created: %v", ids)
+			}
+		})
+	}
+}
+
+func TestLongNamesRejected(t *testing.T) {
+	svc := "a-service-name-long-enough-to-overflow-dns"
+	p := project(t, fmt.Sprintf(`
+services:
+  %s:
+    image: bouncer-e2e-app:v1
+    expose: ["8080"]
+    x-bouncer: {}
+`, svc))
+	out, code := p.bouncer("up")
+	if code != 2 || !strings.Contains(out, p.name+"-"+svc+"-app-1000") || !strings.Contains(out, "over the 63-character DNS name limit") {
+		t.Fatalf("exit %d, want 2 naming the replica name\n%s", code, out)
+	}
+	if ids := p.containers("com.docker.compose.project=" + p.name); len(ids) != 0 {
+		t.Fatalf("containers created: %v", ids)
+	}
+}
+
+// A Service up with --profile is left alone by an up without it, shown live
+// by ps, and removed whole by down.
+func TestProfiledServiceDown(t *testing.T) {
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: bouncer-e2e-app:v1
+    profiles: [x]
+    deploy: { replicas: 2 }
+    expose: ["8080"]
+    x-bouncer: { %s }
+  side:
+    image: alpine:3.22
+    command: ["sleep", "infinity"]
+    stop_signal: SIGKILL
+`, fast))
+	if out, code := p.bouncer("--profile", "x", "up"); code != 0 {
+		t.Fatalf("up --profile x: %d\n%s", code, out)
+	}
+	before := p.replicas("api")
+	p.write(strings.Replace(p.yaml, ":v1", ":v2", 1))
+	if out, code := p.bouncer("up"); code != 0 || !slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("up without the profile must not bounce api: %d\n%s", code, out)
+	}
+	p.write(strings.Replace(p.yaml, ":v2", ":v1", 1))
+	out, code := p.bouncer("ps")
+	if code != 0 || strings.Count(out, " live ") != 2 || strings.Contains(out, "draining") {
+		t.Fatalf("ps without the profile: %d\n%s", code, out)
+	}
+	if out, code := p.bouncer("down"); code != 0 {
+		t.Fatalf("down: %d\n%s", code, out)
+	}
+	if ids := p.containers("com.docker.compose.project=" + p.name); len(ids) != 0 {
+		t.Fatalf("down without the profile left %v", ids)
 	}
 }

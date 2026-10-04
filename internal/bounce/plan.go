@@ -2,6 +2,7 @@
 package bounce
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -127,7 +128,7 @@ func Plan(s State) Step {
 			start = s.RunStart
 		}
 		if !s.healthy(r) && r.HealthySince.IsZero() && s.Now.Sub(start) > s.Spec.HealthTimeout {
-			return Step{Kind: Fail, Replica: &r, Reason: "not healthy within bounce_health_timeout"}
+			return Step{Kind: Fail, Replica: &r, Reason: fmt.Sprintf("never passed %s within %s", HealthCheck(s.Spec), s.Spec.HealthTimeout)}
 		}
 	}
 
@@ -218,6 +219,16 @@ func Plan(s State) Step {
 		return Step{Kind: ScaleUp, Total: len(old) + len(cur) + 1}
 	}
 	return Step{Kind: Wait, Reason: "waiting for new replicas to become healthy"}
+}
+
+// HealthCheck describes the proxy's check of a replica, e.g. "GET /health
+// (expects 2xx)".
+func HealthCheck(s config.Spec) string {
+	expects := "a status below 500"
+	if s.HealthStrict {
+		expects = "2xx"
+	}
+	return fmt.Sprintf("GET %s (expects %s)", s.HealthPath, expects)
 }
 
 // sortReplicas: oldest container first.

@@ -17,6 +17,14 @@ type fakeCompose struct {
 	api.Compose
 	pulled map[string]string // service -> pull_policy
 	ups    int
+	built  []string
+	pull   bool // BuildOptions.Pull of the last Build
+}
+
+func (f *fakeCompose) Build(_ context.Context, _ *types.Project, o api.BuildOptions) error {
+	f.built, f.pull = o.Services, o.Pull
+	slices.Sort(f.built)
+	return nil
 }
 
 func (f *fakeCompose) Pull(_ context.Context, p *types.Project, _ api.PullOptions) error {
@@ -94,6 +102,28 @@ func TestPrePullLockImageWithoutServices(t *testing.T) {
 	}
 	if f := l.Compose.(*fakeCompose); len(f.pulled) != 1 || f.pulled["bouncer-lock"] != types.PullPolicyAlways {
 		t.Fatalf("pulled %v", f.pulled)
+	}
+}
+
+// Services with build: are built, never pulled; --pull always pulls their base images.
+func TestBuildServices(t *testing.T) {
+	built := service("api", "", "", true)
+	built.Build = &types.BuildConfig{Context: "."}
+	tool := service("tool", "", "", false)
+	tool.Build = &types.BuildConfig{Context: "."}
+	l := derive(t, built, tool, service("db", "registry/db:1", "", false))
+	if err := prePull(context.Background(), l, l.Derived.Project.Services, types.PullPolicyAlways, present()); err != nil {
+		t.Fatal(err)
+	}
+	f := l.Compose.(*fakeCompose)
+	if _, ok := f.pulled["api-app"]; ok || f.pulled["db"] == "" {
+		t.Fatalf("pulled %v", f.pulled)
+	}
+	if err := build(context.Background(), l, l.Derived.Project, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.built, []string{"api-app", "tool"}) || !f.pull {
+		t.Fatalf("built %v pull %v", f.built, f.pull)
 	}
 }
 

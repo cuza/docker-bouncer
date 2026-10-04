@@ -22,8 +22,15 @@ func psCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			}
 			want := map[string]string{} // service → desired spec hash
 			listed := map[string]map[string]bool{}
-			for _, s := range l.Derived.Services {
-				_, h, _ := revision.Encode(l.Derived.Project.Services[transform.AppName(s.Name)])
+			for _, s := range append(l.Derived.Services, l.Derived.Disabled...) {
+				app, ok := l.Derived.Project.Services[transform.AppName(s.Name)]
+				if !ok {
+					app = l.Derived.Project.DisabledServices[transform.AppName(s.Name)]
+				}
+				if pinned, err := pinBuilt(ctx, l, app); err == nil {
+					app = pinned
+				}
+				_, h, _ := revision.Encode(app)
 				want[s.Name] = h
 				px, _ := l.Engine.Container(ctx, l.Derived.Project.Name, map[string]string{transform.LabelRole: transform.RoleProxy, transform.LabelService: s.Name})
 				if px != nil && px.Running {

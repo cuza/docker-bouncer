@@ -73,8 +73,14 @@ func (d *docker) Stop(ctx context.Context, id string) error {
 }
 
 func (d *docker) Remove(ctx context.Context, id string) error {
-	_, err := d.c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
+	// Its anonymous volumes go with it; named volumes are never removed here.
+	_, err := d.c.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 	return err
+}
+
+func (d *docker) ImageID(ctx context.Context, ref string) (string, error) {
+	res, err := d.c.ImageInspect(ctx, ref)
+	return res.ID, err
 }
 
 func (d *docker) Exec(ctx context.Context, id string, env []string, cmd ...string) (string, error) {

@@ -26,7 +26,7 @@ import (
 
 func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 	var pull string
-	var forceUnlock bool
+	var forceUnlock, noBuild bool
 	cmd := &cobra.Command{
 		Use:   "up [SERVICE...]",
 		Short: "Create or bounce the project",
@@ -34,7 +34,11 @@ func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 
 up always runs detached and always waits until every Service has converged:
 there is no attached mode, so Ctrl-C stops the bounce, never the project. -d/--detach
-and --wait are accepted for docker compose compatibility and change nothing.`,
+and --wait are accepted for docker compose compatibility and change nothing.
+
+Every service with build: is built first, as with docker compose up --build:
+a changed Dockerfile or build arg makes a new image and so a bounce, while an
+unchanged one is a cached no-op. --no-build skips building.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			l, err := load(ctx, dockerCli, pf)
@@ -54,6 +58,11 @@ and --wait are accepted for docker compose compatibility and change nothing.`,
 			if err := prePull(ctx, l, sel.Services, pull, imagePresent(dockerCli)); err != nil {
 				return Exit(2, err)
 			}
+			if !noBuild {
+				if err := build(ctx, l, sel, pull == types.PullPolicyAlways); err != nil {
+					return Exit(2, err)
+				}
+			}
 			return withLock(ctx, dockerCli, l, forceUnlock, func() error {
 				// 1. Plain services and proxies through Compose (normal convergence).
 				if err := upPlainAndProxies(ctx, l, sel); err != nil {
@@ -68,6 +77,8 @@ and --wait are accepted for docker compose compatibility and change nothing.`,
 		},
 	}
 	cmd.Flags().StringVar(&pull, "pull", "", `Pull policy override: "always", "missing", "never"`)
+	cmd.Flags().BoolVar(&noBuild, "no-build", false, "Don't build images; services with build: need theirs already")
+	cmd.Flags().Bool("build", true, "Compatibility only: up always builds services with build:")
 	cmd.Flags().BoolVar(&forceUnlock, "force-unlock", false, "Take over a lock left by another run")
 	cmd.Flags().BoolP("detach", "d", true, "Compatibility only: up always runs detached")
 	cmd.Flags().Bool("wait", true, "Compatibility only: up always waits for every Service to converge")
@@ -198,7 +209,10 @@ func current(ctx context.Context, l *loaded, svc string) (map[string]string, err
 // desiredApp: the file's replica config, stamped as a new revision only when
 // it differs from what runs.
 func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string) (types.ServiceConfig, error) {
-	app := l.Derived.Project.Services[transform.AppName(svc.Name)]
+	app, err := pinBuilt(ctx, l, l.Derived.Project.Services[transform.AppName(svc.Name)])
+	if err != nil {
+		return app, err
+	}
 	cur, err := current(ctx, l, svc.Name)
 	if err != nil {
 		return app, err
@@ -270,6 +284,9 @@ func prePull(ctx context.Context, l *loaded, svcs types.Services, override strin
 		if policy == "" {
 			policy = svc.PullPolicy
 		}
+		if svc.Build != nil { // built instead; --pull always pulls its base images
+			continue
+		}
 		switch policy {
 		case types.PullPolicyNever, types.PullPolicyBuild:
 			continue
@@ -298,6 +315,37 @@ func prePull(ctx context.Context, l *loaded, svcs types.Services, override strin
 		return nil
 	}
 	return l.Compose.Pull(ctx, p, api.PullOptions{})
+}
+
+// build builds every service of sel with build: through Compose, always (a
+// cached build is quick, and an unchanged image ID means no bounce); pull
+// pulls the base images too.
+func build(ctx context.Context, l *loaded, sel *types.Project, pull bool) error {
+	var names []string
+	for name, svc := range sel.Services {
+		if svc.Build != nil {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return l.Compose.Build(ctx, sel, api.BuildOptions{Services: names, Pull: pull})
+}
+
+// pinBuilt points a built replica service at the image ID its build made, so
+// a rebuilt image is a new spec hash (a bounce) and undo restores that exact
+// image, as Compose's image-digest label marks a container outdated.
+func pinBuilt(ctx context.Context, l *loaded, app types.ServiceConfig) (types.ServiceConfig, error) {
+	if app.Build == nil {
+		return app, nil
+	}
+	id, err := l.Engine.ImageID(ctx, app.Image)
+	if err != nil {
+		return app, fmt.Errorf("%s: %w", app.Name, err)
+	}
+	app.Image = id
+	return app, nil
 }
 
 func imagePresent(dockerCli command.Cli) func(context.Context, string) bool {

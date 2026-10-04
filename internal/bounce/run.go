@@ -140,15 +140,45 @@ func (r *Runner) Run(ctx context.Context) error {
 				return err
 			}
 		case Fail:
-			r.event(svc, api.Error, "Failed: "+step.Replica.Name+" "+step.Reason)
+			reason := "new replica " + step.Replica.Name + " " + step.Reason + r.lastAnswer(ctx, *step.Replica)
+			r.event(svc, api.Error, "Failed: "+reason)
 			if err := r.removeUnhealthyNew(ctx, st); err != nil {
 				return err
 			}
-			return fmt.Errorf("%w: %s: %s %s", ErrFailed, r.Svc.Name, step.Replica.Name, step.Reason)
+			return fmt.Errorf("%w: %s: %s", ErrFailed, r.Svc.Name, reason)
 		}
 		if err := ctx.Err(); err != nil { // Ctrl-C: the current step finished
 			return err
 		}
+	}
+}
+
+// lastAnswer probes the health path once more for the failure message, e.g.
+// " (last answer: HTTP 404)"; Envoy's /clusters keeps only a failed flag.
+func (r *Runner) lastAnswer(ctx context.Context, o Observed) string {
+	switch {
+	case !o.Running:
+		return " (not running)"
+	case o.DockerHealth != "" && o.DockerHealth != "healthy":
+		return " (Docker healthcheck: " + o.DockerHealth + ")"
+	}
+	type answer struct {
+		code int
+		err  error
+	}
+	ch := make(chan answer, 1) // a hung replica must not hang the failure
+	go func() {
+		code, err := r.Proxy.HTTP(ctx, "GET", o.Name, r.Svc.Ports[0].Target, r.Svc.Spec.HealthPath)
+		ch <- answer{code, err}
+	}()
+	select {
+	case a := <-ch:
+		if a.err != nil {
+			return " (last try: " + a.err.Error() + ")"
+		}
+		return fmt.Sprintf(" (last answer: HTTP %d)", a.code)
+	case <-time.After(5 * time.Second):
+		return " (last try: no answer within 5s)"
 	}
 }
 

@@ -86,7 +86,7 @@ prefixes `plain` lines with an RFC 3339 UTC time.
 
 | Command | Does |
 |---|---|
-| `up [SERVICE…] [--pull …] [--force-unlock] [-d] [--wait]` | Pull, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait` accepted for compatibility) |
+| `up [SERVICE…] [--pull …] [--no-build] [--force-unlock] [-d] [--wait]` | Pull, build every `build:` service, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait`, `--build` accepted for compatibility) |
 | `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision |
 | `history SERVICE` | Stored revisions |
 | `ps` | Containers with role and revision |
@@ -95,7 +95,7 @@ prefixes `plain` lines with an RFC 3339 UTC time.
 | `pull [SERVICE…]` | Pull images, including the proxy image |
 | `config` | The derived project |
 | `stop [SERVICE…] [-t N]` | Stop containers; no drain |
-| `down` | Remove the project and its revision history |
+| `down` | Remove the project, every profile included, and its revision history |
 | `version [--short]` (or `--version`) | Show the version, plus the Compose library and default Envoy image it is built on |
 
 ## Documentation

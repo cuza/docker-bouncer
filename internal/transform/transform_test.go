@@ -153,3 +153,94 @@ func TestDependentsAlsoDependOnReplicas(t *testing.T) {
 		t.Fatal("the input project must not change")
 	}
 }
+
+func TestNamespaceAndNameRejections(t *testing.T) {
+	for name, tc := range map[string]struct {
+		edit func(p *types.Project)
+		want string
+	}{
+		"host on a service": {func(p *types.Project) { set(p, "api", func(s *types.ServiceConfig) { s.NetworkMode = "host" }) }, "network_mode host cannot"},
+		"none on a service": {func(p *types.Project) { set(p, "api", func(s *types.ServiceConfig) { s.NetworkMode = "none" }) }, "network_mode none cannot"},
+		"network_mode": {func(p *types.Project) {
+			set(p, "worker", func(s *types.ServiceConfig) { s.NetworkMode = "service:api" })
+		}, `service "worker": network_mode service:api points at api's proxy`},
+		"ipc": {func(p *types.Project) { set(p, "worker", func(s *types.ServiceConfig) { s.Ipc = "service:api" }) }, "ipc service:api points at api's proxy"},
+		"pid": {func(p *types.Project) { set(p, "worker", func(s *types.ServiceConfig) { s.Pid = "service:api" }) }, "pid service:api points"},
+		"volumes_from": {func(p *types.Project) {
+			set(p, "worker", func(s *types.ServiceConfig) { s.VolumesFrom = []string{"api:ro"} })
+		}, "volumes_from api:ro points"},
+		"volumes_from service:": {func(p *types.Project) {
+			set(p, "worker", func(s *types.ServiceConfig) { s.VolumesFrom = []string{"service:api"} })
+		}, "volumes_from service:api points"},
+		"from a disabled service": {func(p *types.Project) {
+			w := p.Services["worker"]
+			w.Ipc = "service:api"
+			delete(p.Services, "worker")
+			p.DisabledServices = types.Services{"worker": w}
+		}, "ipc service:api points"},
+		"long name": {func(p *types.Project) { p.Name = strings.Repeat("p", 51) }, "replica names like " + strings.Repeat("p", 51) + "-api-app-1000 are 64 characters, over the 63-character DNS name limit"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := project()
+			tc.edit(p)
+			if _, err := Apply(p); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+	ok := project()
+	set(ok, "worker", func(s *types.ServiceConfig) { s.NetworkMode, s.VolumesFrom = "service:other", []string{"container:x"} })
+	ok.Name = strings.Repeat("p", 50)
+	if _, err := Apply(ok); err != nil {
+		t.Fatalf("references to plain services and a 63-character name are fine: %v", err)
+	}
+}
+
+func set(p *types.Project, name string, f func(*types.ServiceConfig)) {
+	s := p.Services[name]
+	f(&s)
+	p.Services[name] = s
+}
+
+// A Service whose profile is inactive is derived too, into DisabledServices.
+func TestDisabledServiceDerived(t *testing.T) {
+	p := project()
+	api := p.Services["api"]
+	api.Profiles = []string{"x"}
+	p.DisabledServices = types.Services{"api": api}
+	delete(p.Services, "api")
+	r, err := Apply(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Services) != 0 || len(r.Disabled) != 1 || r.Disabled[0].Name != "api" {
+		t.Fatalf("services %v disabled %v", r.Services, r.Disabled)
+	}
+	d := r.Project.DisabledServices
+	if d["api"].Labels[LabelRole] != RoleProxy || d["api-app"].Labels[LabelRole] != RoleReplica {
+		t.Fatalf("disabled pair %v", d)
+	}
+	if _, ok := r.Project.Services["api-app"]; ok {
+		t.Fatal("an inactive Service must not be in the active project")
+	}
+	if w := r.Project.Services["worker"].DependsOn; len(w) != 2 {
+		t.Fatalf("dependent of a disabled Service: %v", w)
+	}
+}
+
+// A build-only Service's replicas use the image Compose names after the
+// user's service, not after the replicas.
+func TestBuildImageName(t *testing.T) {
+	p := project()
+	set(p, "api", func(s *types.ServiceConfig) { s.Image, s.Build = "", &types.BuildConfig{Context: "."} })
+	r, err := Apply(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app := r.Project.Services["api-app"]; app.Image != "proj-api" {
+		t.Fatalf("image %q", app.Image)
+	}
+	if proxy := r.Project.Services["api"]; proxy.Build != nil {
+		t.Fatal("the proxy is never built")
+	}
+}

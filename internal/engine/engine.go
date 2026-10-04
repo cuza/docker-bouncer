@@ -24,4 +24,5 @@ type Engine interface {
 	Remove(ctx context.Context, id string) error
 	Exec(ctx context.Context, id string, env []string, cmd ...string) (string, error) // stdout; non-zero exit → error with stderr
 	Wait(ctx context.Context, project string, d time.Duration)                        // returns on the project's next container event or after d
+	ImageID(ctx context.Context, ref string) (string, error)                          // the local image's ID
 }
