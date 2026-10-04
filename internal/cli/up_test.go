@@ -294,6 +294,39 @@ func TestDownProject(t *testing.T) {
 	}
 }
 
+type recorded struct {
+	api.EventProcessor
+	events []api.Resource
+}
+
+func (r *recorded) On(events ...api.Resource) { r.events = append(r.events, events...) }
+
+// Scaling a Service to 0 warns: its history lives on the replicas.
+func TestScaleToZeroWarns(t *testing.T) {
+	for _, n := range []int{0, 1} {
+		l := fakeLoaded(t)
+		rec := &recorded{}
+		l.Events = rec
+		app, err := desiredApp(context.Background(), l, l.Derived.Services[0], "u1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.Engine.(*fakeEngine).reps = []engine.Replica{{Name: "proj-api-app-1", Running: true, Labels: app.Labels}}
+		a := l.Derived.Project.Services["api-app"]
+		a.SetScale(n)
+		l.Derived.Project.Services["api-app"] = a
+		if _, err := desiredApp(context.Background(), l, l.Derived.Services[0], "u2"); err != nil {
+			t.Fatal(err)
+		}
+		warned := slices.ContainsFunc(rec.events, func(e api.Resource) bool {
+			return e.Status == api.Warning && strings.Contains(e.Text+" "+e.Details, "history lives on the replicas and is lost at 0")
+		})
+		if warned != (n == 0) {
+			t.Fatalf("replicas %d: warned %v, events %+v", n, warned, rec.events)
+		}
+	}
+}
+
 // A pre_start hook's container is removed, its volumes kept, whether it
 // fails (its exit code and output are reported) or the run is cancelled.
 func TestPreStartHookIsAlwaysRemoved(t *testing.T) {

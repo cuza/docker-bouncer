@@ -222,6 +222,9 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 	if err != nil {
 		return app, err
 	}
+	if cur != nil && app.GetScale() == 0 {
+		l.event("Service "+svc.Name, api.Warning, "Scaling to 0 replicas:", "history lives on the replicas and is lost at 0")
+	}
 	if app.Build != nil && cur[labelImage] != "" && cur[labelImage] != app.Labels[labelImage] &&
 		sameBuild(ctx, l, svc.Name, cur[labelImage], app.Labels[labelImage]) {
 		app.Labels[labelImage] = cur[labelImage] // pinImage's copy
