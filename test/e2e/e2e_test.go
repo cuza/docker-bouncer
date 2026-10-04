@@ -1057,6 +1057,10 @@ func TestServiceNamespaceReferencesRejected(t *testing.T) {
 		"ipc":          {"", "ipc: service:api", "ipc service:api points at api's proxy"},
 		"pid":          {"", "pid: service:api", "pid service:api points at api's proxy"},
 		"volumes_from": {"", "volumes_from: [api]", "volumes_from api points at api's proxy"},
+		"container":    {"network_mode: container:other", "", "network_mode container:other cannot be set on a bouncer service"},
+		"service":      {"network_mode: service:other", "", "network_mode service:other cannot be set on a bouncer service"},
+		"link_local":   {"networks: { default: { link_local_ips: [169.254.0.10] } }", "", "networks.default.link_local_ips cannot be set"},
+		"label":        {"", "labels: { dev.cuza.bouncer.role: replica }", "label dev.cuza.bouncer.role uses the reserved"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := project(t, fmt.Sprintf(`

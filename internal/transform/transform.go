@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -105,9 +104,11 @@ func Apply(in *types.Project) (*Result, error) {
 }
 
 // validate rejects what a proxy plus replicas cannot honour, across the whole
-// project (active profile or not): host or no networking on a Service, a
-// namespace or volumes shared with a Service (they would reach its proxy), and
-// replica names longer than a DNS label.
+// project (active profile or not): host, none or another container's or
+// service's networking and link-local addresses on a Service, a namespace or volumes
+// shared with a Service (they would reach its proxy), replica names longer
+// than a DNS label, and user labels with Bouncer's prefix on any service
+// (Bouncer would take its containers for proxies or replicas).
 func validate(in *types.Project) error {
 	all := maps.Clone(in.DisabledServices)
 	if all == nil {
@@ -122,12 +123,22 @@ func validate(in *types.Project) error {
 		svc := all[name]
 		var problems []string
 		if bouncer[name] {
-			if svc.NetworkMode == "host" || svc.NetworkMode == "none" {
+			if m := svc.NetworkMode; m == "host" || m == "none" || strings.HasPrefix(m, "container:") || strings.HasPrefix(m, "service:") {
 				problems = append(problems, fmt.Sprintf("network_mode %s cannot be set on a bouncer service (its proxy reaches the replicas over a network)", svc.NetworkMode))
+			}
+			for _, n := range sortedKeys(svc.Networks) {
+				if c := svc.Networks[n]; c != nil && len(c.LinkLocalIPs) > 0 {
+					problems = append(problems, fmt.Sprintf("networks.%s.link_local_ips cannot be set on a bouncer service (every replica and the proxy would claim the same addresses)", n))
+				}
 			}
 			// Compose names replicas <project>-<service>-app-<n>; allow 4 digits.
 			if long := in.Name + "-" + AppName(name) + "-1000"; len(long) > MaxDNSName {
 				problems = append(problems, fmt.Sprintf("replica names like %s are %d characters, over the %d-character DNS name limit; use a shorter project name (-p) or service name", long, len(long), MaxDNSName))
+			}
+		}
+		for _, k := range sortedKeys(svc.Labels) {
+			if strings.HasPrefix(k, LabelPrefix) {
+				problems = append(problems, fmt.Sprintf("label %s uses the reserved %s prefix (Bouncer finds its proxies and replicas by it)", k, LabelPrefix))
 			}
 		}
 		refs := [][2]string{{"network_mode", svc.NetworkMode}, {"ipc", svc.Ipc}, {"pid", svc.Pid}}
@@ -225,11 +236,6 @@ func withoutAliases(nets map[string]*types.ServiceNetworkConfig) map[string]*typ
 	return out
 }
 
-func sortedKeys(s types.Services) []string {
-	keys := make([]string, 0, len(s))
-	for k := range s {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+func sortedKeys[V any](m map[string]V) []string {
+	return slices.Sorted(maps.Keys(m))
 }

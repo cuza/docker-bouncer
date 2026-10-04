@@ -58,7 +58,10 @@ func (d *docker) list(ctx context.Context, project string, labels map[string]str
 }
 
 func (d *docker) Replicas(ctx context.Context, project, service string) ([]Replica, error) {
-	return d.list(ctx, project, map[string]string{transform.LabelRole: transform.RoleReplica, transform.LabelService: service})
+	// The Compose service label too: a container Bouncer did not create
+	// cannot pass for a replica.
+	return d.list(ctx, project, map[string]string{transform.LabelRole: transform.RoleReplica, transform.LabelService: service,
+		"com.docker.compose.service": transform.AppName(service)})
 }
 
 func (d *docker) Container(ctx context.Context, project string, labels map[string]string) (*Replica, error) {

@@ -190,6 +190,21 @@ func TestNamespaceAndNameRejections(t *testing.T) {
 			delete(p.Services, "worker")
 			p.DisabledServices = types.Services{"worker": w}
 		}, "ipc service:api points"},
+		"container network on a service": {func(p *types.Project) {
+			set(p, "api", func(s *types.ServiceConfig) { s.NetworkMode = "container:other" })
+		}, "network_mode container:other cannot"},
+		"plain service network on a service": {func(p *types.Project) {
+			set(p, "api", func(s *types.ServiceConfig) { s.NetworkMode = "service:worker" })
+		}, "network_mode service:worker cannot"},
+		"link_local_ips on a service": {func(p *types.Project) {
+			set(p, "api", func(s *types.ServiceConfig) { s.Networks["default"].LinkLocalIPs = []string{"169.254.0.10"} })
+		}, "networks.default.link_local_ips cannot"},
+		"bouncer label on a plain service": {func(p *types.Project) {
+			set(p, "worker", func(s *types.ServiceConfig) { s.Labels = types.Labels{LabelRole: RoleReplica} })
+		}, `service "worker": label ` + LabelRole + ` uses the reserved ` + LabelPrefix + ` prefix`},
+		"bouncer label on a service": {func(p *types.Project) {
+			set(p, "api", func(s *types.ServiceConfig) { s.Labels = types.Labels{LabelPrefix + "x": "1"} })
+		}, "label " + LabelPrefix + "x uses the reserved"},
 		"long name": {func(p *types.Project) { p.Name = strings.Repeat("p", 51) }, "replica names like " + strings.Repeat("p", 51) + "-api-app-1000 are 64 characters, over the 63-character DNS name limit"},
 	} {
 		t.Run(name, func(t *testing.T) {
