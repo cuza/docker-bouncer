@@ -1204,3 +1204,29 @@ func TestUpgradesPassThroughProxy(t *testing.T) {
 		}
 	}
 }
+
+// On a network with IPv6, clients reach the proxy over either family.
+func TestIPv6Clients(t *testing.T) {
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: bouncer-e2e-app:v1
+    expose: ["8080"]
+    networks: [dual]
+    x-bouncer: { %s }
+networks:
+  dual:
+    enable_ipv6: true
+`, fast))
+	p.mustUp()
+	for _, field := range []string{"IPAddress", "GlobalIPv6Address"} {
+		ip := docker(t, "inspect", "-f", "{{range .NetworkSettings.Networks}}{{."+field+"}}{{end}}", p.proxy("api"))
+		if ip == "" {
+			t.Fatalf("proxy has no %s", field)
+		}
+		u := "http://" + net.JoinHostPort(ip, "8080") + "/"
+		if out := docker(t, "run", "--rm", "--network", p.name+"_dual", "curlimages/curl:8.16.0", "-sSg", "--max-time", "10", u); !strings.Contains(out, "v1") {
+			t.Fatalf("GET %s = %q", u, out)
+		}
+	}
+}

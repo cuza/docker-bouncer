@@ -22,6 +22,7 @@ func TestBootstrapListenersRoutesAndAdmin(t *testing.T) {
 	s := Bootstrap(service())
 	for _, want := range []string{
 		`"port_value":9901`, `"address":"127.0.0.1"`, // admin
+		`{"address":"::","ipv4_compat":true,"port_value":8080}`, // dual-stack listener
 		`"name":"port-8080"`, `"name":"port-9090"`, // listeners
 		`"cluster":"port-8080"`, `"timeout":"0s"`,
 		`"validate_clusters":false`,
