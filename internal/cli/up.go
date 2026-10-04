@@ -21,6 +21,8 @@ import (
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
+	"github.com/moby/moby/client"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -283,7 +285,7 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 // skipBuilt skips every service with build: (up builds them; undo restores
 // image IDs no registry serves). Otherwise, as docker compose pull, one with
 // build: is pulled only when the user gave it an image:.
-func prePull(ctx context.Context, l *loaded, svcs types.Services, override string, skipBuilt bool, present func(context.Context, string) bool) error {
+func prePull(ctx context.Context, l *loaded, svcs types.Services, override string, skipBuilt bool, present func(ctx context.Context, image, platform string) bool) error {
 	var names []string
 	images := map[string]bool{}
 	for name, svc := range svcs {
@@ -299,12 +301,12 @@ func prePull(ctx context.Context, l *loaded, svcs types.Services, override strin
 			continue
 		case types.PullPolicyAlways:
 		default:
-			if images[svc.Image] || present(ctx, svc.Image) {
+			if images[svc.Image+" "+svc.Platform] || present(ctx, svc.Image, svc.Platform) {
 				continue
 			}
 		}
 		names = append(names, name)
-		images[svc.Image] = true
+		images[svc.Image+" "+svc.Platform] = true
 	}
 	p := &types.Project{Name: l.Derived.Project.Name, WorkingDir: l.Derived.Project.WorkingDir, Services: types.Services{}}
 	for _, n := range names {
@@ -313,7 +315,7 @@ func prePull(ctx context.Context, l *loaded, svcs types.Services, override strin
 		s.DependsOn = nil                     // the dependencies are not in this project
 		p.Services[n] = s
 	}
-	if lockImage := proxyImage(l); override != types.PullPolicyNever && !images[lockImage] && !present(ctx, lockImage) {
+	if lockImage := proxyImage(l); override != types.PullPolicyNever && !images[lockImage+" "] && !present(ctx, lockImage, "") {
 		lock := types.ServiceConfig{Name: "bouncer-lock"}
 		lock.Image, lock.PullPolicy = lockImage, types.PullPolicyAlways
 		p.Services[lock.Name] = lock
@@ -416,9 +418,23 @@ func runImage(app types.ServiceConfig) string {
 	return app.Image
 }
 
-func imagePresent(dockerCli command.Cli) func(context.Context, string) bool {
-	return func(ctx context.Context, image string) bool {
-		_, err := dockerCli.Client().ImageInspect(ctx, image)
-		return err == nil
+// imagePresent: the image is local, for platform (os/arch[/variant]) when
+// one is given: a tag can be held for another platform only, and creating
+// the container would fail.
+func imagePresent(dockerCli command.Cli) func(ctx context.Context, image, platform string) bool {
+	return func(ctx context.Context, image, platform string) bool {
+		if platform == "" {
+			_, err := dockerCli.Client().ImageInspect(ctx, image)
+			return err == nil
+		}
+		f := append(strings.Split(strings.ToLower(platform), "/"), "", "")
+		want := ocispec.Platform{OS: f[0], Architecture: f[1], Variant: f[2]}
+		res, err := dockerCli.Client().ImageInspect(ctx, image, client.ImageInspectWithPlatform(&want))
+		if err != nil { // not held for that platform, or an engine before API 1.49
+			if res, err = dockerCli.Client().ImageInspect(ctx, image); err != nil {
+				return false
+			}
+		}
+		return res.Os == want.OS && res.Architecture == want.Architecture && (want.Variant == "" || res.Variant == want.Variant)
 	}
 }

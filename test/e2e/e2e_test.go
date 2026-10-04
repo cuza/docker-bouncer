@@ -1324,3 +1324,36 @@ services:
 	p.mustUp()
 	check("a bounce in three steps")
 }
+
+// A Service with platform: is pulled for that platform when the local copy
+// of its tag is another platform's.
+func TestPlatformPullsWhenOnlyAnotherIsLocal(t *testing.T) {
+	const image = "traefik/whoami:v1.11.0"
+	native, other := "linux/arm64", "linux/amd64"
+	if docker(t, "info", "-f", "{{.Architecture}}") == "x86_64" {
+		native, other = other, native
+	}
+	exec.Command("docker", "rmi", "-f", image).Run()
+	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", image).Run() })
+	docker(t, "pull", "-q", "--platform", native, image)
+	port := freePort(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: %s
+    platform: %s
+    ports: ["127.0.0.1:%d:80"]
+    x-bouncer: { %s }
+`, image, other, port, fast))
+	p.mustUp()
+	mustGet(t, url(port, "/"))
+	reps := p.replicas("api")
+	if len(reps) != 1 {
+		t.Fatalf("%d replicas", len(reps))
+	}
+	// The manifest a container runs is known with the containerd image store.
+	got := docker(t, "inspect", "-f", "{{with .ImageManifestDescriptor}}{{.Platform.OS}}/{{.Platform.Architecture}}{{end}}", reps[0])
+	if got != "" && got != other {
+		t.Fatalf("replica runs %s, want %s", got, other)
+	}
+}

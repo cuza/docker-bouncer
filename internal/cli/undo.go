@@ -78,7 +78,7 @@ func undoCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 				// missing, an image ID no registry serves must still be local.
 				run := app
 				run.Image = runImage(app)
-				if err := undoImageCheck(svc.Name, target.Revision, app.Image, run, imagePresent(dockerCli)(ctx, run.Image)); err != nil {
+				if err := undoImageCheck(svc.Name, target.Revision, app.Image, run, imagePresent(dockerCli)(ctx, run.Image, run.Platform)); err != nil {
 					return Exit(1, err)
 				}
 				pulls[app.Name] = run

@@ -84,8 +84,25 @@ func service(name, image, policy string, bouncer bool) types.ServiceConfig {
 	return s
 }
 
-func present(images ...string) func(context.Context, string) bool {
-	return func(_ context.Context, image string) bool { return slices.Contains(images, image) }
+// present holds images as "ref" (any platform) or "ref platform".
+func present(images ...string) func(context.Context, string, string) bool {
+	return func(_ context.Context, image, platform string) bool {
+		return slices.Contains(images, image) || slices.Contains(images, image+" "+platform)
+	}
+}
+
+// A service with platform: is pulled unless the image is local for that platform.
+func TestPrePullChecksPlatform(t *testing.T) {
+	amd := service("tool", "registry/tool:1", "", false)
+	amd.Platform = "linux/amd64"
+	l := derive(t, amd, service("db", "registry/tool:1", "", false))
+	have := func(_ context.Context, image, platform string) bool { return platform == "" }
+	if err := prePull(context.Background(), l, l.Derived.Project.Services, "", true, have); err != nil {
+		t.Fatal(err)
+	}
+	if f := l.Compose.(*fakeCompose); len(f.pulled) != 1 || f.pulled["tool"] == "" {
+		t.Fatalf("pulled %v, want tool for its platform", f.pulled)
+	}
 }
 
 func TestPrePullSelection(t *testing.T) {
