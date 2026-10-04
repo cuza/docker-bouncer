@@ -934,18 +934,22 @@ services:
 	if out, code := p.bouncer("up"); code != 0 || !slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("an unchanged build must not bounce: %d\n%s", code, out)
 	}
-	writeFile(t, dockerfile, "FROM "+app("v1")+"\nRUN exit 1\n")
+	writeFile(t, dockerfile, "FROM "+app("v1")+"\nLABEL "+label+"\nRUN exit 1\n")
 	if out, code := p.bouncer("up"); code != 2 || !slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("a failed build: exit %d, want 2 and no change\n%s", code, out)
 	}
 }
 
-// pruneBuilt returns a LABEL for test Dockerfiles; the images built with it
-// are removed once the test's projects are down (call it before project:
-// cleanups run last-registered first).
+// pruneBuilt returns a LABEL for test Dockerfiles; the images built with it,
+// and the containers a failed build leaves behind, are removed once the
+// test's projects are down (call it before project: cleanups run
+// last-registered first).
 func pruneBuilt(t *testing.T) string {
 	l := fmt.Sprintf("%s-build=%d", prefix, projectSeq.Add(1))
-	t.Cleanup(func() { exec.Command("docker", "image", "prune", "-af", "--filter", "label="+l).Run() })
+	t.Cleanup(func() {
+		exec.Command("docker", "container", "prune", "-f", "--filter", "label="+l).Run()
+		exec.Command("docker", "image", "prune", "-af", "--filter", "label="+l).Run()
+	})
 	return l
 }
 
