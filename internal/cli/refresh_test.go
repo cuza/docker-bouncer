@@ -1,17 +1,22 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/cuza/docker-bouncer/internal/engine"
 	"github.com/cuza/docker-bouncer/internal/revision"
 	"github.com/cuza/docker-bouncer/internal/transform"
 	dockercli "github.com/docker/cli/cli"
+	"github.com/docker/compose/v5/pkg/api"
+	"github.com/docker/compose/v5/pkg/compose"
 )
 
 func TestInvocationRoundTrip(t *testing.T) {
@@ -108,5 +113,58 @@ func TestShellVars(t *testing.T) {
 	inv.EnvFiles = []string{other}
 	if got := shellVars(inv); !slices.Equal(got, []string{"FROM_ENV"}) {
 		t.Fatalf("--env-file: %v, want [FROM_ENV]", got)
+	}
+}
+
+type recorder struct {
+	api.EventProcessor
+	lines []string
+}
+
+func (r *recorder) On(events ...api.Resource) {
+	for _, e := range events {
+		r.lines = append(r.lines, e.ID+" "+e.Text+" "+e.Details)
+	}
+}
+
+// The dry run models Compose's up for plain services and proxies: create,
+// start, or recreate on a config-hash or image change.
+func TestDryRunPlainAndProxies(t *testing.T) {
+	l := derive(t, service("api", "registry/app:1", "", true), service("db", "registry/db:1", "", false),
+		service("cache", "registry/cache:1", "", false), service("queue", "registry/queue:1", "", false), service("web", "registry/web:1", "", false))
+	p := noPull(l.Derived.Project.WithServicesDisabled(appNames(l)...))
+	hash := func(n string) string { h, _ := compose.ServiceHash(p.Services[n]); return h }
+	at := func(n string, running bool, labels map[string]string) *engine.Replica {
+		labels[api.ConfigHashLabel] = hash(n)
+		labels[api.ImageDigestLabel] = "sha256:" + n
+		return &engine.Replica{Running: running, Labels: labels}
+	}
+	fe := &fakeEngine{images: map[string]string{"registry/db:1": "sha256:db", "registry/cache:1": "sha256:cache", "registry/queue:1": "sha256:new"},
+		containers: map[string]*engine.Replica{
+			"api":   at("api", true, map[string]string{transform.LabelRole: transform.RoleProxy}),
+			"db":    at("db", true, map[string]string{}),     // converged
+			"cache": at("cache", false, map[string]string{}), // stopped
+			"queue": at("queue", true, map[string]string{}),  // its image moved
+			// web: no container
+		}}
+	fe.containers["api"].Labels[api.ConfigHashLabel] = "old" // proxy definition changed
+	l.Engine = fe
+	for _, all := range []bool{false, true} {
+		r := &recorder{}
+		l.Events = r
+		change := refreshDryRun(context.Background(), l, nil, refreshOptions{all: all, pull: types.PullPolicyNever})
+		suffix := " with -a:"
+		if all {
+			suffix = ":"
+		}
+		want := []string{
+			"Service api Would recreate" + suffix + " definition changed",
+			"Service cache Would start" + suffix + " stopped",
+			"Service queue Would recreate" + suffix + " image registry/queue:1 moved from sha256:queue to sha256:new",
+			"Service web Would create" + suffix + " no container",
+		}
+		if strings.Join(r.lines, "\n") != strings.Join(want, "\n") || change != all {
+			t.Errorf("all=%v: change %v\n%s\nwant\n%s", all, change, strings.Join(r.lines, "\n"), strings.Join(want, "\n"))
+		}
 	}
 }

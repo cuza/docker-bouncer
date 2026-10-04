@@ -24,13 +24,16 @@ type fakeEngine struct {
 	reps    []engine.Replica
 	id      string   // Image's ID; "sha256:<ref>" when empty
 	digests []string // Image's repo digests
+	// Container answers by compose service; images overrides Image's ID.
+	containers map[string]*engine.Replica
+	images     map[string]string
 }
 
 func (f *fakeEngine) Replicas(context.Context, string, string) ([]engine.Replica, error) {
 	return f.reps, nil
 }
-func (f *fakeEngine) Container(context.Context, string, map[string]string) (*engine.Replica, error) {
-	return nil, nil
+func (f *fakeEngine) Container(_ context.Context, _ string, labels map[string]string) (*engine.Replica, error) {
+	return f.containers[labels[api.ServiceLabel]], nil
 }
 func (f *fakeEngine) Stop(context.Context, string) error   { return nil }
 func (f *fakeEngine) Remove(context.Context, string) error { return nil }
@@ -39,6 +42,9 @@ func (f *fakeEngine) Exec(context.Context, string, []string, ...string) (string,
 }
 func (f *fakeEngine) Wait(context.Context, string, time.Duration) {}
 func (f *fakeEngine) Image(_ context.Context, ref string) (string, []string, error) {
+	if id, ok := f.images[ref]; ok {
+		return id, f.digests, nil
+	}
 	if f.id != "" {
 		return f.id, f.digests, nil
 	}

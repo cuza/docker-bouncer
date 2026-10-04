@@ -24,6 +24,7 @@ import (
 	dockercli "github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v5/pkg/api"
+	"github.com/docker/compose/v5/pkg/compose"
 	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
@@ -105,7 +106,7 @@ to date or skipped; 1 when one failed; 2 on a usage or config error.`,
 		},
 	}
 	cmd.Flags().BoolVarP(&o.all, "all", "a", false, "Also converge plain services as docker compose up does (a changed image recreates them)")
-	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "Report what would change; pull, create and bounce nothing")
+	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "Report what would change (with -a, plain services and proxies too); pull, create and bounce nothing")
 	cmd.Flags().StringVar(&o.pull, "pull", "", `"never": use the local images, don't ask the registry`)
 	return cmd
 }
@@ -451,28 +452,49 @@ func refreshDryRun(ctx context.Context, l *loaded, svcs []config.Service, o refr
 		change = true
 		l.event(id, api.Warning, "Would bounce:", strings.Join(why, "; "))
 	}
-	for _, n := range plainServices(l) {
-		s := l.Derived.Project.Services[n]
-		c, err := l.Engine.Container(ctx, l.Derived.Project.Name, map[string]string{api.ServiceLabel: n})
-		if err != nil || c == nil || s.Build != nil {
+	// Plain services and proxies, as upPlainAndProxies hands them to Compose.
+	p := noPull(l.Derived.Project.WithServicesDisabled(appNames(l)...))
+	for _, n := range slices.Sorted(maps.Keys(p.Services)) {
+		verb, why := composeChange(ctx, l, p.Services[n], o)
+		if verb == "" {
 			continue
 		}
-		why := ""
-		if d := registryMoved(ctx, l, "Service "+n, s, o); d != "" {
-			why = fmt.Sprintf("%s moved in the registry to %s", s.Image, d)
-		} else if local, _, err := l.Engine.Image(ctx, s.Image); err == nil && local != c.Labels[api.ImageDigestLabel] {
-			why = fmt.Sprintf("image %s moved from %s to %s", s.Image, shortImage(c.Labels[api.ImageDigestLabel]), shortImage(local))
-		}
-		if why == "" {
-			continue
-		}
-		text := "Would be recreated with -a:"
+		text := "Would " + verb + " with -a:"
 		if o.all {
-			text, change = "Would be recreated:", true
+			text, change = "Would "+verb+":", true
 		}
 		l.event("Service "+n, api.Warning, text, why)
 	}
 	return change
+}
+
+// composeChange is what Compose's up would do to s's container, as
+// recreate-on-diverged does: "create" when there is none, "recreate" when
+// its config hash (compose.ServiceHash) or, for a plain service, its image
+// changed, "start" when it is stopped; "" when nothing.
+func composeChange(ctx context.Context, l *loaded, s types.ServiceConfig, o refreshOptions) (verb, why string) {
+	c, err := l.Engine.Container(ctx, l.Derived.Project.Name, map[string]string{api.ServiceLabel: s.Name})
+	switch {
+	case err != nil:
+		return "", ""
+	case c == nil:
+		return "create", "no container"
+	}
+	if h, err := compose.ServiceHash(s); err == nil && h != c.Labels[api.ConfigHashLabel] {
+		return "recreate", "definition changed"
+	}
+	if _, proxy := c.Labels[transform.LabelRole]; !proxy && s.Build == nil {
+		if d := registryMoved(ctx, l, "Service "+s.Name, s, o); d != "" {
+			return "recreate", fmt.Sprintf("%s moved in the registry to %s", s.Image, d)
+		}
+		if local, _, err := l.Engine.Image(ctx, s.Image); err == nil && local != c.Labels[api.ImageDigestLabel] {
+			return "recreate", fmt.Sprintf("image %s moved from %s to %s", s.Image, shortImage(c.Labels[api.ImageDigestLabel]), shortImage(local))
+		}
+	}
+	if !c.Running {
+		return "start", "stopped"
+	}
+	return "", ""
 }
 
 // registryMoved is ref@digest when the registry's image for s's tag is not

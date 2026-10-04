@@ -97,8 +97,12 @@ func TestRefreshAllRecreatesPlain(t *testing.T) {
 `, tag))
 	p.mustUp()
 	worker := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.service=worker")
+	// Compose's config hashes agree with the dry run's: nothing to do yet.
+	if out, code := p.refresh("", "--dry-run", "-a", "--pull", "never"); code != 0 || strings.Contains(out, "Would") || !strings.Contains(out, "1 up to date") {
+		t.Fatalf("dry run -a after up: %d\n%s", code, out)
+	}
 	docker(t, "tag", "bouncer-e2e-app:v2", tag)
-	if out, code := p.refresh("", "--dry-run", "--pull", "never"); code != 0 || !strings.Contains(out, "Service worker Would be recreated with -a: image "+tag+" moved") {
+	if out, code := p.refresh("", "--dry-run", "--pull", "never"); code != 0 || !strings.Contains(out, "Service worker Would recreate with -a: image "+tag+" moved") {
 		t.Fatalf("dry run: %d\n%s", code, out)
 	}
 	out, code := p.refresh("", "--pull", "never")
