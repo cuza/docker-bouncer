@@ -1289,3 +1289,38 @@ services:
 		t.Fatalf("GET / = %q", body)
 	}
 }
+
+// Replicas get a provider's injected environment, as a plain dependent does,
+// on the first up and in every step of a bounce.
+func TestProviderEnvironmentReachesReplicas(t *testing.T) {
+	dir := t.TempDir()
+	provider := filepath.Join(dir, "provider")
+	writeFile(t, provider, "#!/bin/sh\ncase \" $* \" in *\" up \"*) echo '{\"type\":\"setenv\",\"message\":\"URL=from-provider\"}';; esac\n")
+	if err := os.Chmod(provider, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := project(t, fmt.Sprintf(`
+services:
+  db:
+    provider: { type: %s }
+  api:
+    image: bouncer-e2e-app:v1
+    depends_on: [db]
+    expose: ["8080"]
+    deploy: { replicas: 3 }
+    x-bouncer: { %s, bounce_overprovision_factor: 0.33, drain_method_params: { delay: 1s } }
+`, provider, fast))
+	check := func(when string) {
+		t.Helper()
+		for _, id := range p.replicas("api") {
+			if got := docker(t, "exec", id, "sh", "-c", "echo $DB_URL"); got != "from-provider" {
+				t.Fatalf("DB_URL = %q in %s after %s", got, id, when)
+			}
+		}
+	}
+	p.mustUp()
+	check("the first up")
+	p.write(strings.Replace(p.yaml, ":v1", ":v2", 1))
+	p.mustUp()
+	check("a bounce in three steps")
+}

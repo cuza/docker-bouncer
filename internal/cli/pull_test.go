@@ -15,11 +15,13 @@ import (
 // fakeCompose implements the calls under test; any other panics.
 type fakeCompose struct {
 	api.Compose
-	pulled map[string]string // service -> pull_policy
-	ups    int
-	built  []string
-	pull   bool           // BuildOptions.Pull of the last Build
-	bp     *types.Project // the project of the last Build
+	pulled       map[string]string // service -> pull_policy
+	ups          int
+	providerRuns int
+	lastEnv      types.MappingWithEquals // api-app's in the last Up
+	built        []string
+	pull         bool           // BuildOptions.Pull of the last Build
+	bp           *types.Project // the project of the last Build
 }
 
 func (f *fakeCompose) Build(_ context.Context, p *types.Project, o api.BuildOptions) error {
@@ -38,8 +40,22 @@ func (f *fakeCompose) Pull(_ context.Context, p *types.Project, _ api.PullOption
 
 func (f *fakeCompose) Create(context.Context, *types.Project, api.CreateOptions) error { return nil }
 
-func (f *fakeCompose) Up(context.Context, *types.Project, api.UpOptions) error {
+// Up runs the project's providers as Compose does: it injects URL into
+// their dependents' environment.
+func (f *fakeCompose) Up(_ context.Context, p *types.Project, _ api.UpOptions) error {
 	f.ups++ // called under loaded.mu
+	for name, s := range p.Services {
+		if s.Provider == nil {
+			continue
+		}
+		f.providerRuns++
+		for _, d := range p.Services {
+			if _, ok := d.DependsOn[name]; ok {
+				d.Environment["URL"] = new("from-" + name)
+			}
+		}
+	}
+	f.lastEnv = p.Services["api-app"].Environment
 	return nil
 }
 
@@ -164,7 +180,7 @@ func TestScaleUpConcurrentServices(t *testing.T) {
 	for _, name := range []string{"api-app", "web-app"} {
 		wg.Go(func() {
 			for total := 3; total < 30; total++ {
-				if err := (composeScaler{l}).ScaleUp(context.Background(), l.Derived.Project.Services[name], total); err != nil {
+				if err := (composeScaler{l: l}).ScaleUp(context.Background(), l.Derived.Project.Services[name], total); err != nil {
 					t.Error(err)
 				}
 			}
@@ -175,5 +191,30 @@ func TestScaleUpConcurrentServices(t *testing.T) {
 		if s := l.Derived.Project.Services[name]; s.GetScale() != 2 || s.PullPolicy != "" {
 			t.Fatalf("%s: derived project changed: scale %d pull %q", name, s.GetScale(), s.PullPolicy)
 		}
+	}
+}
+
+// Every step of a bounce that creates replicas runs their providers, so
+// the new replicas get the injected environment.
+func TestScaleUpRunsProviders(t *testing.T) {
+	db := types.ServiceConfig{Name: "db", Provider: &types.ServiceProviderConfig{Type: "model"}}
+	api := service("api", "registry/api:1", "", true)
+	api.DependsOn = types.DependsOnConfig{"db": {Condition: types.ServiceConditionStarted, Required: true}}
+	l := derive(t, db, api)
+	f := l.Compose.(*fakeCompose)
+	sc := composeScaler{l: l}
+	for total := 1; total <= 3; total++ {
+		if err := sc.ScaleUp(context.Background(), l.Derived.Project.Services["api-app"], total); err != nil {
+			t.Fatal(err)
+		}
+		if v := f.lastEnv["URL"]; v == nil || *v != "from-db" {
+			t.Fatalf("step %d: replicas created without the provider's environment: %v", total, f.lastEnv)
+		}
+	}
+	if f.providerRuns != 3 {
+		t.Fatalf("providers ran %d times in three steps, want 3", f.providerRuns)
+	}
+	if _, leaked := l.Derived.Project.Services["api-app"].Environment["URL"]; leaked {
+		t.Fatal("the provider's environment must not leak into the derived project")
 	}
 }

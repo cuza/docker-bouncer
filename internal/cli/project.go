@@ -90,36 +90,67 @@ type composeScaler struct{ l *loaded }
 // ScaleUp creates replicas with the desired config up to total and leaves
 // existing ones alone (Recreate=never); Bouncer never scales down via Compose.
 func (c composeScaler) ScaleUp(ctx context.Context, app types.ServiceConfig, total int) error {
-	p, err := c.l.Derived.Project.WithSelectedServices([]string{app.Name}, types.IgnoreDependencies)
+	// Its dependencies are converged and disabled here, except providers:
+	// Compose injects a provider's environment only into the dependents in
+	// the project it runs the provider for, so creating replicas runs them
+	// (once more, as every compose up does). Compose works on a deep copy
+	// of the project, so the injected values cannot be kept for the next
+	// step: each step that creates replicas runs the providers.
+	names, deps := []string{app.Name}, types.DependsOnConfig{}
+	for d, cfg := range app.DependsOn {
+		if s, ok := c.l.Derived.Project.Services[d]; ok && s.Provider != nil {
+			names, deps[d] = append(names, d), cfg
+		}
+	}
+	p, err := c.l.Derived.Project.WithSelectedServices(names, types.IgnoreDependencies)
 	if err != nil {
 		return err
+	}
+	for _, d := range names[1:] {
+		s := p.Services[d]
+		s.DependsOn = nil
+		p.Services[d] = s
 	}
 	if app.Deploy != nil { // shared with the derived project; SetScale writes into it
 		d := *app.Deploy
 		app.Deploy = &d
 	}
 	app.SetScale(total)
-	app.DependsOn = nil                                  // its dependencies are converged and disabled here
+	app.DependsOn = nil
+	if len(deps) > 0 {
+		app.DependsOn = deps
+		app.Environment = maps.Clone(app.Environment) // Compose writes the providers' values into (a copy of) it
+		if app.Environment == nil {
+			app.Environment = types.MappingWithEquals{}
+		}
+	}
 	app.CustomLabels = p.Services[app.Name].CustomLabels // a restored spec has none
 	app.PullPolicy = types.PullPolicyNever               // prePull is the only pull
 	p.Services[app.Name] = app
+	// The same project without the providers, for the calls after the
+	// replicas' creation: hooks and starting need no provider run.
+	bare := *p
+	noDeps := app
+	noDeps.DependsOn = nil
+	bare.Services = types.Services{app.Name: noDeps}
 	create := api.CreateOptions{Services: []string{app.Name}, Recreate: api.RecreateNever, RecreateDependencies: api.RecreateNever}
-	start := api.StartOptions{Project: p, Services: []string{app.Name}}
+	start := api.StartOptions{Project: &bare, Services: []string{app.Name}}
 	hooks, err := c.runsPreStart(ctx, app)
 	if err != nil {
 		return err
 	}
 	if !hooks {
-		return c.compose(func() error { return c.l.Compose.Up(ctx, p, api.UpOptions{Create: create, Start: start}) })
+		err = c.compose(func() error {
+			return c.l.Compose.Up(ctx, p, api.UpOptions{Create: create, Start: api.StartOptions{Project: p, Services: start.Services}})
+		})
+	} else if err = c.compose(func() error { return c.l.Compose.Create(ctx, p, create) }); err == nil {
+		if err = c.preStart(ctx, &bare, noDeps); err != nil {
+			c.removeCreated(ctx, app)
+			return err
+		}
+		err = c.compose(func() error { return c.l.Compose.Start(ctx, bare.Name, start) })
 	}
-	if err := c.compose(func() error { return c.l.Compose.Create(ctx, p, create) }); err != nil {
-		return err
-	}
-	if err := c.preStart(ctx, p, app); err != nil {
-		c.removeCreated(ctx, app)
-		return err
-	}
-	return c.compose(func() error { return c.l.Compose.Start(ctx, p.Name, start) })
+	return err
 }
 
 // compose makes one Compose call; a hook runs between calls, so other
