@@ -30,7 +30,7 @@ func api(port, replicas int, xb string) string {
 	return fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     deploy: { replicas: %d }
     ports: ["127.0.0.1:%d:8080"]
     x-bouncer: { %s }
@@ -108,7 +108,7 @@ func TestCrossoverUnderLoadZeroErrors(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     deploy: { replicas: 2 }
     ports: ["127.0.0.1:%d:8080"]
     healthcheck: { test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"], interval: 1s }
@@ -125,7 +125,7 @@ services:
 	if r := <-res; r.failures != 0 || r.total == 0 {
 		t.Fatalf("%d failed requests out of %d: %v", r.failures, r.total, r.samples)
 	}
-	if img := p.images("api"); img["bouncer-e2e-app:v2"] != 2 || len(img) != 1 {
+	if img := p.images("api"); img[app("v2")] != 2 || len(img) != 1 {
 		t.Fatalf("replica images %v", img)
 	}
 	if h := p.history("api"); len(h) != 2 {
@@ -162,7 +162,7 @@ func TestNeverHealthyFailsAndOldServes(t *testing.T) {
 	port := freePort(t)
 	p := project(t, api(port, 2, `min_task_uptime: 1s, bounce_health_timeout: 15s, healthcheck: { uri: /health }, drain_method_params: { delay: 2s }`))
 	p.mustUp()
-	p.write(strings.Replace(p.yaml, "image: bouncer-e2e-app:v1", "image: bouncer-e2e-app:v2\n    environment: { UNHEALTHY: \"1\" }", 1))
+	p.write(strings.Replace(p.yaml, "image: "+app("v1"), "image: "+app("v2")+"\n    environment: { UNHEALTHY: \"1\" }", 1))
 	out, code := p.bouncer("up")
 	if code != 1 {
 		t.Fatalf("bounce of a never-healthy version: exit %d, want 1\n%s", code, out)
@@ -173,7 +173,7 @@ func TestNeverHealthyFailsAndOldServes(t *testing.T) {
 	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "v1") {
 		t.Fatalf("GET / = %q", body)
 	}
-	if img := p.images("api"); img["bouncer-e2e-app:v1"] != 2 || len(img) != 1 {
+	if img := p.images("api"); img[app("v1")] != 2 || len(img) != 1 {
 		t.Fatalf("replica images after the failed bounce %v (no v2 may remain)", img)
 	}
 }
@@ -446,7 +446,7 @@ func TestResumeAfterKill(t *testing.T) {
 			t.Fatalf("slow request: %s", s)
 		}
 	}
-	if img := p.images("api"); img["bouncer-e2e-app:v2"] != 2 || len(img) != 1 {
+	if img := p.images("api"); img[app("v2")] != 2 || len(img) != 1 {
 		t.Fatalf("replica images %v", img)
 	}
 }
@@ -473,7 +473,7 @@ func TestInterruptReleasesLock(t *testing.T) {
 	if out, code := p.bouncer("up"); code != 0 {
 		t.Fatalf("up after interrupt: %d\n%s", code, out)
 	}
-	if img := p.images("api"); img["bouncer-e2e-app:v2"] != 1 || len(img) != 1 {
+	if img := p.images("api"); img[app("v2")] != 1 || len(img) != 1 {
 		t.Fatalf("replica images %v", img)
 	}
 }
@@ -512,7 +512,7 @@ func TestUndoAndUndoOfUndo(t *testing.T) {
 			t.Fatalf("after undo %d GET / = %q, want %s", i+1, body, want)
 		}
 		top := strings.Fields(p.history("api")[0])
-		if rev := fmt.Sprint(3 + i); top[0] != rev || top[1] != "*" || top[3] != "bouncer-e2e-app:"+want {
+		if rev := fmt.Sprint(3 + i); top[0] != rev || top[1] != "*" || top[3] != app(want) {
 			t.Fatalf("after undo %d history top %q, want revision %s of %s", i+1, top, rev, want)
 		}
 	}
@@ -523,16 +523,16 @@ func TestUndoAndUndoOfUndo(t *testing.T) {
 // again by its ID.
 func TestMovedTagBounces(t *testing.T) {
 	port := freePort(t)
-	tag := fmt.Sprintf("bouncer-e2e-app:moving-%d", port)
-	docker(t, "tag", "bouncer-e2e-app:v1", tag)
+	tag := app(fmt.Sprint("moving-", port))
+	docker(t, "tag", app("v1"), tag)
 	t.Cleanup(func() { exec.Command("docker", "rmi", tag).Run() })
-	p := project(t, strings.Replace(api(port, 1, fast+`, drain_method_params: { delay: 1s }`), "bouncer-e2e-app:v1", tag, 1))
+	p := project(t, strings.Replace(api(port, 1, fast+`, drain_method_params: { delay: 1s }`), "{{APP}}:v1", tag, 1))
 	p.mustUp()
 	p.mustUp()
 	if h := p.history("api"); len(h) != 1 {
 		t.Fatalf("an unchanged image is no new revision: %q", h)
 	}
-	docker(t, "tag", "bouncer-e2e-app:v2", tag)
+	docker(t, "tag", app("v2"), tag)
 	p.mustUp()
 	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "v2") {
 		t.Fatalf("after the tag moved GET / = %q, want v2", body)
@@ -541,7 +541,7 @@ func TestMovedTagBounces(t *testing.T) {
 		t.Fatalf("replicas run %v, want the tag as written", img)
 	}
 	h := p.history("api")
-	if v2 := docker(t, "image", "inspect", "-f", "{{.Id}}", "bouncer-e2e-app:v2")[len("sha256:"):][:12]; len(h) != 2 || !strings.Contains(h[0], tag+" ("+v2+")") {
+	if v2 := docker(t, "image", "inspect", "-f", "{{.Id}}", app("v2"))[len("sha256:"):][:12]; len(h) != 2 || !strings.Contains(h[0], tag+" ("+v2+")") {
 		t.Fatalf("a moved tag is a new revision showing its image: %q", h)
 	}
 	if out, code := p.bouncer("undo"); code != 0 {
@@ -557,7 +557,7 @@ func TestUndoUsesCurrentEnvFile(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     env_file: [app.env]
     ports: ["127.0.0.1:%d:8080"]
     x-bouncer: { %s, drain_method_params: { delay: 2s } }
@@ -609,15 +609,15 @@ func TestSharedPortsAndAdminCollision(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   a:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     expose: ["8080"]
     x-bouncer: { %[1]s }
   b:
-    image: bouncer-e2e-app:v2
+    image: {{APP}}:v2
     expose: ["8080"]
     x-bouncer: { %[1]s }
   c:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     environment: { PORT: "9901" }
     expose: ["9901"]
     x-bouncer: { %[1]s }
@@ -706,7 +706,7 @@ func TestDownThenUp(t *testing.T) {
 	if most != 1 {
 		t.Fatalf("up to %d replicas existed at once, want 1", most)
 	}
-	if img := p.images("api"); img["bouncer-e2e-app:v2"] != 1 || len(img) != 1 {
+	if img := p.images("api"); img[app("v2")] != 1 || len(img) != 1 {
 		t.Fatalf("replica images %v", img)
 	}
 }
@@ -724,7 +724,7 @@ func TestLargeLabels(t *testing.T) {
 		return fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     environment: { BIG: %s }
     ports: ["127.0.0.1:%d:8080"]
     x-bouncer: { %s, drain_method_params: { delay: 1s } }
@@ -747,8 +747,9 @@ services:
 		t.Fatalf("history (current + 2 that fit): %q", h)
 	}
 	docker(t, "inspect", p.replicas("api")[0])
+	// ls lists every project on the engine: look only at this one's rows.
 	out, code := p.bouncer("ls")
-	if code != 0 || !strings.Contains(out, p.name) {
+	if code != 0 || !slices.ContainsFunc(strings.Split(out, "\n"), func(l string) bool { return strings.HasPrefix(l, p.name+" ") }) {
 		t.Fatalf("ls: %d\n%s", code, out)
 	}
 }
@@ -757,11 +758,11 @@ func TestUpNamedServiceOnly(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   a:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     expose: ["8080"]
     x-bouncer: { %[1]s, drain_method_params: { delay: 1s } }
   b:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     expose: ["8080"]
     x-bouncer: { %[1]s, drain_method_params: { delay: 1s } }
   side:
@@ -777,7 +778,7 @@ services:
 	if out, code := p.bouncer("up", "a"); code != 0 {
 		t.Fatalf("up a: %d\n%s", code, out)
 	}
-	if img := p.images("a"); img["bouncer-e2e-app:v2"] != 1 || len(img) != 1 {
+	if img := p.images("a"); img[app("v2")] != 1 || len(img) != 1 {
 		t.Fatalf("a replicas %v, want v2", img)
 	}
 	after := p.ids()
@@ -786,7 +787,7 @@ services:
 			t.Fatalf("up a touched %s", name)
 		}
 	}
-	if img := p.images("b"); img["bouncer-e2e-app:v1"] != 1 || len(img) != 1 {
+	if img := p.images("b"); img[app("v1")] != 1 || len(img) != 1 {
 		t.Fatalf("b replicas %v, want untouched v1", img)
 	}
 	if out, code := p.bouncer("up", "nope"); code != 2 {
@@ -824,11 +825,11 @@ func TestDependsOnBetweenBouncerServices(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     expose: ["8080"]
     x-bouncer: { %[2]s }
   web:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     depends_on: [api]
     ports: ["127.0.0.1:%[1]d:8080"]
     x-bouncer: { %[2]s, drain_method_params: { delay: 2s } }
@@ -838,7 +839,7 @@ services:
 	stop := make(chan struct{})
 	res := load(t, url(port, "/"), stop)
 	// Bounce web only; the scoped up also selects api-app but must not bounce it.
-	p.write(strings.Replace(p.yaml, "image: bouncer-e2e-app:v1\n    depends_on", "image: bouncer-e2e-app:v2\n    depends_on", 1))
+	p.write(strings.Replace(p.yaml, "image: "+app("v1")+"\n    depends_on", "image: "+app("v2")+"\n    depends_on", 1))
 	if out, code := p.bouncer("up", "web"); code != 0 {
 		t.Fatalf("bounce web: %d\n%s", code, out)
 	}
@@ -846,7 +847,7 @@ services:
 	if r := <-res; r.failures != 0 || r.total == 0 {
 		t.Fatalf("%d failed requests out of %d: %v", r.failures, r.total, r.samples)
 	}
-	if img := p.images("web"); img["bouncer-e2e-app:v2"] != 1 || len(img) != 1 {
+	if img := p.images("web"); img[app("v2")] != 1 || len(img) != 1 {
 		t.Fatalf("web replicas %v", img)
 	}
 	if got := p.replicas("api"); !slices.Equal(got, before) {
@@ -856,7 +857,7 @@ services:
 	if out, code := p.bouncer("up"); code != 0 {
 		t.Fatalf("bounce api: %d\n%s", code, out)
 	}
-	if img := p.images("api"); img["bouncer-e2e-app:v2"] != 1 || len(img) != 1 {
+	if img := p.images("api"); img[app("v2")] != 1 || len(img) != 1 {
 		t.Fatalf("api replicas %v", img)
 	}
 	if out, code := p.bouncer("stop"); code != 0 {
@@ -902,7 +903,7 @@ services:
 	if err := os.MkdirAll(filepath.Dir(dockerfile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nARG V\nENV VERSION=$V\n")
+	writeFile(t, dockerfile, "FROM "+app("v1")+"\nLABEL "+label+"\nARG V\nENV VERSION=$V\n")
 	p.mustUp()
 	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "one") {
 		t.Fatalf("GET / = %q", body)
@@ -924,7 +925,7 @@ services:
 	}
 	p.write(strings.Replace(p.yaml, "V: one", "V: two", 1))
 	bounce("two")
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=three\n")
+	writeFile(t, dockerfile, "FROM "+app("v1")+"\nLABEL "+label+"\nENV VERSION=three\n")
 	bounce("three")
 	if h := p.history("api"); len(h) != 3 {
 		t.Fatalf("history: %q", h)
@@ -933,18 +934,31 @@ services:
 	if out, code := p.bouncer("up"); code != 0 || !slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("an unchanged build must not bounce: %d\n%s", code, out)
 	}
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nRUN exit 1\n")
+	writeFile(t, dockerfile, "FROM "+app("v1")+"\nLABEL "+label+"\nRUN exit 1\n")
 	if out, code := p.bouncer("up"); code != 2 || !slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("a failed build: exit %d, want 2 and no change\n%s", code, out)
 	}
 }
 
-// pruneBuilt returns a LABEL for test Dockerfiles; the images built with it
-// are removed once the test's projects are down (call it before project:
-// cleanups run last-registered first).
+// pruneBuilt returns a LABEL for test Dockerfiles; the images built with it,
+// and the containers a failed build leaves behind, are removed once the
+// test's projects are down (call it before project: cleanups run
+// last-registered first).
 func pruneBuilt(t *testing.T) string {
-	l := fmt.Sprintf("bouncer-e2e-build=%d-%d", os.Getpid(), projectSeq.Add(1))
-	t.Cleanup(func() { exec.Command("docker", "image", "prune", "-af", "--filter", "label="+l).Run() })
+	l := fmt.Sprintf("%s-build=%d", prefix, projectSeq.Add(1))
+	t.Cleanup(func() {
+		// The engine runs one prune of a kind at a time and refuses the
+		// others, so a concurrent run's prune is waited out.
+		for _, prune := range [][]string{{"container", "prune", "-f"}, {"image", "prune", "-af"}} {
+			for range 30 {
+				out, err := exec.Command("docker", append(prune, "--filter", "label="+l)...).CombinedOutput()
+				if err == nil || !strings.Contains(string(out), "already running") {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+		}
+	})
 	return l
 }
 
@@ -966,7 +980,7 @@ services:
 `, port, fast))
 	withBuildx(t, "additional_contexts need BuildKit, which Compose uses only through the buildx plugin")
 	for dir, body := range map[string]string{
-		"base": "FROM bouncer-e2e-app:v1\nLABEL " + label + "\nENV VERSION=from-base\n",
+		"base": "FROM " + app("v1") + "\nLABEL " + label + "\nENV VERSION=from-base\n",
 		"api":  "FROM base\nLABEL " + label + "\n",
 	} {
 		if err := os.MkdirAll(filepath.Join(p.dir, dir), 0o755); err != nil {
@@ -1015,14 +1029,14 @@ services:
 	if err := os.MkdirAll(filepath.Dir(dockerfile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=one\n")
+	writeFile(t, dockerfile, "FROM "+app("v1")+"\nLABEL "+label+"\nENV VERSION=one\n")
 	p.mustUp()
 	before := p.replicas("api")
 	p.mustUp()
 	if h := p.history("api"); len(h) != 1 || !slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("an unchanged rebuild bounced: history %q", h)
 	}
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=two\n")
+	writeFile(t, dockerfile, "FROM "+app("v1")+"\nLABEL "+label+"\nENV VERSION=two\n")
 	p.mustUp()
 	if h := p.history("api"); len(h) != 2 || slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("a changed build must bounce: history %q", h)
@@ -1039,14 +1053,14 @@ func writeFile(t *testing.T, path, body string) {
 // A drained replica's anonymous volumes go with it.
 func TestAnonymousVolumesDoNotLeak(t *testing.T) {
 	p := project(t, api(freePort(t), 2, fast+`, drain_method_params: { delay: 1s }`))
-	image := "bouncer-e2e-vol:" + p.name[len("bouncer-e2e-"):]
-	build := exec.Command("docker", "build", "-q", "-t", image, "-")
-	build.Stdin = strings.NewReader("FROM bouncer-e2e-app:v1\nVOLUME /data\n")
+	image := app(fmt.Sprint("vol-", projectSeq.Add(1)))
+	build := exec.Command("docker", "build", "-q", "--force-rm", "-t", image, "-")
+	build.Stdin = strings.NewReader("FROM " + app("v1") + "\nVOLUME /data\n")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	t.Cleanup(func() { exec.Command("docker", "rmi", image).Run() })
-	p.write(strings.Replace(p.yaml, "bouncer-e2e-app:v1", image, 1))
+	p.write(strings.Replace(p.yaml, app("v1"), image, 1))
 	p.mustUp()
 	seen := map[string]bool{}
 	mounted := func() {
@@ -1103,7 +1117,7 @@ func TestServiceNamespaceReferencesRejected(t *testing.T) {
 			p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     expose: ["8080"]
     %s
     x-bouncer: {}
@@ -1128,7 +1142,7 @@ func TestLongNamesRejected(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   %s:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     expose: ["8080"]
     x-bouncer: {}
 `, svc))
@@ -1148,7 +1162,7 @@ func TestProfiledServiceDown(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     profiles: [database]
     deploy: { replicas: 2 }
     expose: ["8080"]
@@ -1251,7 +1265,7 @@ func TestIPv6Clients(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     expose: ["8080"]
     networks: [dual]
     x-bouncer: { %s }
@@ -1280,7 +1294,7 @@ func TestPreStartRunsOnBounceAndUndo(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     ports: ["127.0.0.1:%d:8080"]
     volumes: ["./hooks:/hooks", "/scratch"]
     pre_start:
@@ -1310,7 +1324,7 @@ services:
 	ran("v1", "v2", "v1")
 	p.write(strings.Replace(strings.Replace(p.yaml, ":v2", ":v1", 1), ">> /hooks/log", ">> /hooks/log; echo migration-failed >&2; exit 3", 1))
 	before := p.replicas("api")
-	volumes := docker(t, "volume", "ls", "-q")
+	volumes := strings.Fields(docker(t, "volume", "ls", "-q"))
 	if out, code := p.bouncer("up"); code != 1 || !strings.Contains(out, "pre_start[0]: exited with 3") || !strings.Contains(out, "migration-failed") {
 		t.Fatalf("a failing hook: exit %d, want 1 with its exit code and output\n%s", code, out)
 	}
@@ -1319,8 +1333,22 @@ services:
 	if ids := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.hook=pre_start"); len(ids) != 0 {
 		t.Fatalf("hook containers left: %v", ids)
 	}
-	if after := docker(t, "volume", "ls", "-q"); after != volumes {
-		t.Fatalf("volumes leaked:\nbefore %s\nafter %s", volumes, after)
+	// Other projects on the engine create and remove volumes too: a leak is
+	// a new volume no container uses, still there a moment later.
+	leaked := func() []string {
+		var l []string
+		for _, v := range strings.Fields(docker(t, "volume", "ls", "-q", "--filter", "dangling=true")) {
+			if !slices.Contains(volumes, v) {
+				l = append(l, v)
+			}
+		}
+		return l
+	}
+	if len(leaked()) > 0 {
+		time.Sleep(5 * time.Second)
+		if l := leaked(); len(l) > 0 {
+			t.Fatalf("volumes leaked: %v", l)
+		}
 	}
 	ran("v1", "v2", "v1", "v1")
 	if !slices.Equal(p.replicas("api"), before) {
@@ -1345,7 +1373,7 @@ services:
   db:
     provider: { type: %s }
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     depends_on: [db]
     expose: ["8080"]
     deploy: { replicas: 3 }
@@ -1375,6 +1403,7 @@ func TestPlatformPullsWhenOnlyAnotherIsLocal(t *testing.T) {
 	if docker(t, "info", "-f", "{{.Architecture}}") == "x86_64" {
 		native, other = other, native
 	}
+	hostLock(t, "bouncer-e2e-whoami") // the image is public: other runs use it too
 	exec.Command("docker", "rmi", "-f", image).Run()
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", image).Run() })
 	docker(t, "pull", "-q", "--platform", other, image)

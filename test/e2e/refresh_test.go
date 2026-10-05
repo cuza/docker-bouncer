@@ -40,7 +40,7 @@ func (p *proj) refresh(dir string, args ...string) (string, int) {
 // movingTag tags image as a tag unique to the test, removed at the end.
 func movingTag(t *testing.T, name, image string) string {
 	t.Helper()
-	tag := fmt.Sprintf("bouncer-e2e-app:%s-%d-%d", name, os.Getpid()%10000, projectSeq.Add(1))
+	tag := app(fmt.Sprintf("%s-%d", name, projectSeq.Add(1)))
 	docker(t, "tag", image, tag)
 	t.Cleanup(func() { exec.Command("docker", "rmi", tag).Run() })
 	return tag
@@ -50,7 +50,7 @@ func movingTag(t *testing.T, name, image string) string {
 // request, and a second refresh finds nothing to do.
 func TestRefreshMovesTag(t *testing.T) {
 	port := freePort(t)
-	tag := movingTag(t, "moving", "bouncer-e2e-app:v1")
+	tag := movingTag(t, "moving", app("v1"))
 	p := project(t, fmt.Sprintf(`
 services:
   api:
@@ -61,7 +61,7 @@ services:
     x-bouncer: { %s, drain_method_params: { delay: 5s } }
 `, tag, port, fast))
 	p.mustUp()
-	docker(t, "tag", "bouncer-e2e-app:v2", tag)
+	docker(t, "tag", app("v2"), tag)
 	stop := make(chan struct{})
 	res := load(t, url(port, "/"), stop)
 	out, code := p.refresh(t.TempDir(), "--pull", "never")
@@ -90,7 +90,7 @@ services:
 
 func TestRefreshAllRecreatesPlain(t *testing.T) {
 	port := freePort(t)
-	tag := movingTag(t, "plain", "bouncer-e2e-app:v1")
+	tag := movingTag(t, "plain", app("v1"))
 	p := project(t, api(port, 1, fast)+fmt.Sprintf(`
   worker:
     image: %s
@@ -101,7 +101,7 @@ func TestRefreshAllRecreatesPlain(t *testing.T) {
 	if out, code := p.refresh("", "--dry-run", "-a", "--pull", "never"); code != 0 || strings.Contains(out, "Would") || !strings.Contains(out, "1 up to date") {
 		t.Fatalf("dry run -a after up: %d\n%s", code, out)
 	}
-	docker(t, "tag", "bouncer-e2e-app:v2", tag)
+	docker(t, "tag", app("v2"), tag)
 	if out, code := p.refresh("", "--dry-run", "--pull", "never"); code != 0 || !strings.Contains(out, "Service worker Would recreate with -a: image "+tag+" moved") {
 		t.Fatalf("dry run: %d\n%s", code, out)
 	}
@@ -117,19 +117,19 @@ func TestRefreshAllRecreatesPlain(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "Refreshed") || len(got) != 1 || got[0] == worker[0] {
 		t.Fatalf("refresh -a: %d, worker %v → %v\n%s", code, worker, got, out)
 	}
-	if img, v2 := docker(t, "inspect", "-f", "{{.Image}}", got[0]), docker(t, "image", "inspect", "-f", "{{.Id}}", "bouncer-e2e-app:v2"); img != v2 {
+	if img, v2 := docker(t, "inspect", "-f", "{{.Image}}", got[0]), docker(t, "image", "inspect", "-f", "{{.Id}}", app("v2")); img != v2 {
 		t.Fatalf("worker runs %s, want v2 %s", img, v2)
 	}
 }
 
 func TestRefreshSkipsLocked(t *testing.T) {
-	tag := movingTag(t, "locked", "bouncer-e2e-app:v1")
-	p := project(t, strings.Replace(api(freePort(t), 1, fast), "bouncer-e2e-app:v1", tag, 1))
+	tag := movingTag(t, "locked", app("v1"))
+	p := project(t, strings.Replace(api(freePort(t), 1, fast), "{{APP}}:v1", tag, 1))
 	p.mustUp()
 	docker(t, "create", "--name", p.name+"-bouncer-lock", "--label", "dev.cuza.bouncer.role=lock",
 		"--label", "dev.cuza.bouncer.lock-owner=someone-else", "--label", "com.docker.compose.project="+p.name,
 		"envoyproxy/envoy:v1.39.1", "true")
-	docker(t, "tag", "bouncer-e2e-app:v2", tag)
+	docker(t, "tag", app("v2"), tag)
 	before := p.replicas("api")
 	// Pulling is allowed: the local-only tag would fail to pull, so this also
 	// shows the lock is checked before the pull.
@@ -146,21 +146,21 @@ func TestRefreshSkipsLocked(t *testing.T) {
 // another loads the same project: the env file's tag, the profiled services.
 func TestRefreshReplaysEnvFileAndProfiles(t *testing.T) {
 	port := freePort(t)
-	tag := movingTag(t, "env", "bouncer-e2e-app:v1")
+	tag := movingTag(t, "env", app("v1"))
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:${TAG}
+    image: {{APP}}:${TAG}
     profiles: [p]
     deploy: { replicas: 1 }
     ports: ["127.0.0.1:%d:8080"]
     x-bouncer: { %s }
   worker:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     profiles: [p]
 `, port, fast))
 	cwd := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cwd, "x.env"), []byte("TAG="+strings.TrimPrefix(tag, "bouncer-e2e-app:")+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cwd, "x.env"), []byte("TAG="+strings.TrimPrefix(tag, appImage+":")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	up := exec.Command("docker", "bouncer", "-p", p.name, "-f", filepath.Join(p.dir, "compose.yaml"), "--env-file", "x.env", "--profile", "p", "up")
@@ -174,7 +174,7 @@ services:
 		down.Run()
 	})
 	worker := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.service=worker")
-	docker(t, "tag", "bouncer-e2e-app:v2", tag)
+	docker(t, "tag", app("v2"), tag)
 	out, code := p.refresh(t.TempDir(), "-a", "--pull", "never")
 	if code != 0 || !strings.Contains(out, "Refreshed") {
 		t.Fatalf("refresh: %d\n%s", code, out)
@@ -215,10 +215,10 @@ func TestRefreshJSON(t *testing.T) {
 
 func TestRefreshDryRun(t *testing.T) {
 	port := freePort(t)
-	tag := movingTag(t, "dry", "bouncer-e2e-app:v1")
-	p := project(t, strings.Replace(api(port, 1, fast), "bouncer-e2e-app:v1", tag, 1))
+	tag := movingTag(t, "dry", app("v1"))
+	p := project(t, strings.Replace(api(port, 1, fast), "{{APP}}:v1", tag, 1))
 	p.mustUp()
-	docker(t, "tag", "bouncer-e2e-app:v2", tag)
+	docker(t, "tag", app("v2"), tag)
 	before := p.ids()
 	out, code := p.refresh("", "--dry-run", "--pull", "never")
 	if code != 0 || !strings.Contains(out, "Would bounce: image "+tag+" moved from ") || !strings.Contains(out, "1 would change") {
@@ -266,7 +266,7 @@ func TestRefreshReplaysNewestInvocation(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     deploy: { replicas: "${N:-1}" }
     ports: ["127.0.0.1:%d:8080"]
     x-bouncer: { %s }
@@ -310,7 +310,7 @@ func TestRefreshInvocationOfAnotherProject(t *testing.T) {
 	zw.Close()
 	docker(t, "run", "-d", "--label", "com.docker.compose.project="+p.name, "--label", "dev.cuza.bouncer.role=replica",
 		"--label", "dev.cuza.bouncer.service=api", "--label", "com.docker.compose.service=api-app", "--label", "dev.cuza.bouncer.up-id=20260101T000000Z",
-		"--label", "dev.cuza.bouncer.invocation="+base64.StdEncoding.EncodeToString(buf.Bytes()), "bouncer-e2e-app:v1")
+		"--label", "dev.cuza.bouncer.invocation="+base64.StdEncoding.EncodeToString(buf.Bytes()), app("v1"))
 	out, code := p.refresh("", "--pull", "never")
 	if code != 1 || !strings.Contains(out, "the recorded invocation loads project "+other.name+", not "+p.name) || strings.Contains(out, "Lock") {
 		t.Fatalf("refresh: %d\n%s", code, out)
@@ -324,7 +324,7 @@ func TestRefreshInvocationOfAnotherProject(t *testing.T) {
 func TestRefreshAllStartsStoppedPlain(t *testing.T) {
 	p := project(t, api(freePort(t), 1, fast)+`
   worker:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
 `)
 	p.mustUp()
 	worker := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.service=worker")

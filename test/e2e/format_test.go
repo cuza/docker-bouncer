@@ -62,7 +62,7 @@ func TestMigrate(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     deploy: { replicas: 2 }
     ports: ["127.0.0.1:%d:8080"]
     healthcheck: { test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"], interval: 1s }

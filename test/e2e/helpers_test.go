@@ -5,6 +5,7 @@
 package e2e
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -15,11 +16,21 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
 
 var projectSeq atomic.Int64
+
+// prefix names everything this run creates (projects, images, labels), so
+// runs sharing a Docker engine never touch each other's.
+var prefix = "bouncer-e2e-" + fmt.Sprint(os.Getpid()) + strings.ToLower(rand.Text()[:4])
+
+// appImage is the test app's repository; app("v1") is one of its tags.
+var appImage = prefix + "-app"
+
+func app(tag string) string { return appImage + ":" + tag }
 
 // buildx is the user's buildx plugin, or "". The private config leaves it
 // out, so builds use the classic builder; tests that need BuildKit opt in
@@ -28,9 +39,10 @@ var buildx string
 
 // TestMain builds the test app images and the plugin into a private
 // DOCKER_CONFIG, so `docker bouncer` runs this tree's code and the user's
-// ~/.docker is never touched.
+// ~/.docker is never touched. It removes the run's images and config last.
 func TestMain(m *testing.M) {
 	os.Exit(func() int {
+		defer cleanup()
 		if err := setup(); err != nil {
 			fmt.Fprintln(os.Stderr, "e2e setup:", err)
 			return 1
@@ -39,10 +51,24 @@ func TestMain(m *testing.M) {
 	}())
 }
 
+// cleanup untags this run's images by name (never by ID: another run's
+// identical build shares the ID) and removes the private DOCKER_CONFIG.
+func cleanup() {
+	out, _ := exec.Command("docker", "image", "ls", "--filter", "reference="+prefix+"-*", "--format", "{{.Repository}}:{{.Tag}}").Output()
+	if refs := strings.Fields(string(out)); len(refs) > 0 {
+		if out, err := exec.Command("docker", append([]string{"image", "rm"}, refs...)...).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "e2e cleanup: %v\n%s", err, out)
+		}
+	}
+	if dir := os.Getenv("DOCKER_CONFIG"); strings.Contains(dir, "bouncer-e2e-config") {
+		os.RemoveAll(dir)
+	}
+}
+
 func setup() error {
 	// Images first, with the user's own docker config (buildx lives there).
 	for _, v := range []string{"v1", "v2"} {
-		if out, err := exec.Command("docker", "build", "-q", "-t", "bouncer-e2e-app:"+v, "--build-arg", "VERSION="+v, "app").CombinedOutput(); err != nil {
+		if out, err := exec.Command("docker", "build", "-q", "-t", app(v), "--build-arg", "VERSION="+v, "app").CombinedOutput(); err != nil {
 			return fmt.Errorf("build app %s: %v\n%s", v, err, out)
 		}
 	}
@@ -80,6 +106,9 @@ func setup() error {
 		return fmt.Errorf("build plugin: %v\n%s", err, out)
 	}
 	os.Setenv("DOCKER_CONFIG", dir)
+	// The e2e build's hooks apply only where a test sets them on one command.
+	os.Unsetenv("BOUNCER_E2E_FORMAT")
+	os.Unsetenv("BOUNCER_E2E_LOCK_DELAY")
 	os.Unsetenv("DOCKER_CONTEXT")
 	if out, err := exec.Command("docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput(); err != nil {
 		return fmt.Errorf("docker info with the private config: %v\n%s", err, out)
@@ -94,14 +123,21 @@ type proj struct {
 	yaml string
 }
 
-// project writes compose.yaml (with {{PORT}} replaced by a free host port,
-// see p.port) and removes everything the project created when the test ends.
+// project writes compose.yaml (see write) and removes everything the
+// project created when the test ends.
 func project(t *testing.T, yaml string) *proj {
 	t.Helper()
 	p := &proj{t: t, dir: t.TempDir(),
-		name: fmt.Sprintf("bouncer-e2e-%d-%d", os.Getpid()%10000, projectSeq.Add(1))}
+		name: fmt.Sprintf("%s-%d", prefix, projectSeq.Add(1))}
 	p.write(yaml)
 	t.Cleanup(func() {
+		// down keeps volumes, as docker compose down without -v does: note
+		// the project's (anonymous ones carry no project label) first.
+		var vols []string
+		for _, id := range p.containers("com.docker.compose.project=" + p.name) {
+			out, _ := exec.Command("docker", "inspect", "-f", `{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}`, id).Output()
+			vols = append(vols, strings.Fields(string(out))...)
+		}
 		if out, code := p.bouncer("down"); code != 0 {
 			t.Logf("down: %d\n%s", code, out)
 		}
@@ -110,12 +146,18 @@ func project(t *testing.T, yaml string) *proj {
 			t.Logf("leftover containers after down: %v", ids)
 			exec.Command("docker", append([]string{"rm", "-f"}, ids...)...).Run()
 		}
+		out, _ := exec.Command("docker", "volume", "ls", "-q", "--filter", "label=com.docker.compose.project="+p.name).Output()
+		if vols = append(vols, strings.Fields(string(out))...); len(vols) > 0 {
+			exec.Command("docker", append([]string{"volume", "rm", "-f"}, vols...)...).Run()
+		}
 	})
 	return p
 }
 
+// write saves compose.yaml with {{APP}} replaced by appImage.
 func (p *proj) write(yaml string) {
 	p.t.Helper()
+	yaml = strings.ReplaceAll(yaml, "{{APP}}", appImage)
 	p.yaml = yaml
 	if err := os.WriteFile(filepath.Join(p.dir, "compose.yaml"), []byte(yaml), 0o644); err != nil {
 		p.t.Fatal(err)
@@ -180,6 +222,22 @@ func docker(t *testing.T, args ...string) string {
 		t.Fatalf("docker %v: %v\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// hostLock holds a file lock until the test ends, so a test that changes
+// something every run shares runs in one run at a time.
+// ponytail: one host's runs only; a daemon reached from several hosts needs a
+// lock on the daemon (a named container) instead.
+func hostLock(t *testing.T, name string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(os.TempDir(), name+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
 }
 
 // freePort returns a host port that was free a moment ago.
