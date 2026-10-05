@@ -36,14 +36,18 @@ func TestDockerAndProxy(t *testing.T) {
 	e := NewDocker(c)
 	s := svc()
 	t.Cleanup(func() {
-		exec.Command("docker", "rm", "-f", e2eProject+"-proxy", e2eProject+"-app-1").Run()
+		exec.Command("docker", "rm", "-f", e2eProject+"-proxy", e2eProject+"-app-1", e2eProject+"-other").Run()
 		exec.Command("docker", "network", "rm", e2eProject).Run()
 	})
 	run(t, "network", "create", e2eProject)
 	project := "--label=com.docker.compose.project=" + e2eProject
 	run(t, "run", "-d", "--name", e2eProject+"-app-1", "--network", e2eProject, project,
 		"--label="+transform.LabelRole+"="+transform.RoleReplica, "--label="+transform.LabelService+"=api",
-		"alpine:3", "sleep", "300")
+		"--label=com.docker.compose.service=api-app", "alpine:3", "sleep", "300")
+	// Bouncer's labels on another service's container: not a replica.
+	run(t, "run", "-d", "--name", e2eProject+"-other", "--network", e2eProject, project,
+		"--label="+transform.LabelRole+"="+transform.RoleReplica, "--label="+transform.LabelService+"=api",
+		"--label=com.docker.compose.service=worker", "alpine:3", "sleep", "300")
 	ep := envoy.Entrypoint()
 	proxyID := run(t, "run", "-d", "--name", e2eProject+"-proxy", "--network", e2eProject, project,
 		"--label="+transform.LabelRole+"="+transform.RoleProxy, "--label="+transform.LabelService+"=api",

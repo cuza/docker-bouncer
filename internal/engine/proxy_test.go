@@ -21,10 +21,14 @@ func (f *fakeEngine) Replicas(context.Context, string, string) ([]Replica, error
 func (f *fakeEngine) Container(context.Context, string, map[string]string) (*Replica, error) {
 	return nil, nil
 }
-func (f *fakeEngine) Stop(context.Context, string) error                      { return nil }
-func (f *fakeEngine) Remove(context.Context, string) error                    { return nil }
-func (f *fakeEngine) Wait(context.Context, string, time.Duration)             {}
-func (f *fakeEngine) Image(context.Context, string) (string, []string, error) { return "", nil, nil }
+func (f *fakeEngine) Start(context.Context, string) error                      { return nil }
+func (f *fakeEngine) Stop(context.Context, string) error                       { return nil }
+func (f *fakeEngine) RemoveKeepVolumes(context.Context, string) error          { return nil }
+func (f *fakeEngine) Logs(context.Context, string, int) (string, error)        { return "", nil }
+func (f *fakeEngine) Remove(context.Context, string) error                     { return nil }
+func (f *fakeEngine) Wait(context.Context, string, time.Duration)              {}
+func (f *fakeEngine) Image(context.Context, string) (string, []string, error)  { return "", nil, nil }
+func (f *fakeEngine) ImageManifests(context.Context, string) ([]string, error) { return nil, nil }
 func (f *fakeEngine) Exec(_ context.Context, _ string, env []string, cmd ...string) (string, error) {
 	f.execs = append(f.execs, cmd)
 	f.envs = append(f.envs, env)

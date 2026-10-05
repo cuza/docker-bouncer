@@ -5,7 +5,7 @@ package transform
 import (
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +22,14 @@ const (
 	LabelRole      = LabelPrefix + "role"
 	LabelService   = LabelPrefix + "service"
 	LabelAdminPort = LabelPrefix + "admin-port"
+	// LabelInvocation records how a replica's up or undo loaded its project,
+	// so refresh can load it the same way.
+	LabelInvocation = LabelPrefix + "invocation"
+	// LabelVersion (the CLI's version, informational) and LabelFormat (the
+	// storage format, see package format) are on every replica and lock,
+	// never on a proxy: a CLI upgrade would change its config hash.
+	LabelVersion = LabelPrefix + "version"
+	LabelFormat  = LabelPrefix + "format"
 
 	RoleProxy   = "proxy"
 	RoleReplica = "replica"
@@ -38,6 +46,12 @@ type Result struct {
 }
 
 func AppName(service string) string { return service + "-app" }
+
+// IsReplica: labels are a Service's replica, created by Compose as S-app.
+// Bouncer's labels alone are not enough: a plain service may carry them.
+func IsReplica(labels map[string]string) bool {
+	return labels[LabelRole] == RoleReplica && labels["com.docker.compose.service"] == AppName(labels[LabelService])
+}
 
 // MaxDNSName is the longest DNS label; Envoy finds replicas by container name.
 const MaxDNSName = 63
@@ -104,9 +118,11 @@ func Apply(in *types.Project) (*Result, error) {
 }
 
 // validate rejects what a proxy plus replicas cannot honour, across the whole
-// project (active profile or not): host or no networking on a Service, a
-// namespace or volumes shared with a Service (they would reach its proxy), and
-// replica names longer than a DNS label.
+// project (active profile or not): host, none or another container's or
+// service's networking and link-local addresses on a Service, a namespace or volumes
+// shared with a Service (they would reach its proxy), replica names longer
+// than a DNS label, and user labels with Bouncer's prefix on any service
+// (Bouncer would take its containers for proxies or replicas).
 func validate(in *types.Project) error {
 	all := maps.Clone(in.DisabledServices)
 	if all == nil {
@@ -121,12 +137,22 @@ func validate(in *types.Project) error {
 		svc := all[name]
 		var problems []string
 		if bouncer[name] {
-			if svc.NetworkMode == "host" || svc.NetworkMode == "none" {
+			if m := svc.NetworkMode; m == "host" || m == "none" || strings.HasPrefix(m, "container:") || strings.HasPrefix(m, "service:") {
 				problems = append(problems, fmt.Sprintf("network_mode %s cannot be set on a bouncer service (its proxy reaches the replicas over a network)", svc.NetworkMode))
+			}
+			for _, n := range sortedKeys(svc.Networks) {
+				if c := svc.Networks[n]; c != nil && len(c.LinkLocalIPs) > 0 {
+					problems = append(problems, fmt.Sprintf("networks.%s.link_local_ips cannot be set on a bouncer service (every replica and the proxy would claim the same addresses)", n))
+				}
 			}
 			// Compose names replicas <project>-<service>-app-<n>; allow 4 digits.
 			if long := in.Name + "-" + AppName(name) + "-1000"; len(long) > MaxDNSName {
 				problems = append(problems, fmt.Sprintf("replica names like %s are %d characters, over the %d-character DNS name limit; use a shorter project name (-p) or service name", long, len(long), MaxDNSName))
+			}
+		}
+		for _, k := range sortedKeys(svc.Labels) {
+			if strings.HasPrefix(k, LabelPrefix) {
+				problems = append(problems, fmt.Sprintf("label %s uses the reserved %s prefix (Bouncer finds its proxies and replicas by it)", k, LabelPrefix))
 			}
 		}
 		refs := [][2]string{{"network_mode", svc.NetworkMode}, {"ipc", svc.Ipc}, {"pid", svc.Pid}}
@@ -190,16 +216,12 @@ func replicas(project string, svc types.ServiceConfig) types.ServiceConfig {
 	}
 	app.Ports = nil
 	app.Extensions = nil
-	if svc.Networks != nil {
-		app.Networks = map[string]*types.ServiceNetworkConfig{}
-		for n, cfg := range svc.Networks {
-			if cfg == nil {
-				app.Networks[n] = nil
-				continue
-			}
-			c := *cfg
-			c.Aliases = nil
-			app.Networks[n] = &c
+	// The aliases move to the proxy; pre_start hooks inherited them too.
+	app.Networks = withoutAliases(svc.Networks)
+	if svc.PreStart != nil {
+		app.PreStart = slices.Clone(svc.PreStart)
+		for i := range app.PreStart {
+			app.PreStart[i].Networks = withoutAliases(app.PreStart[i].Networks)
 		}
 	}
 	app.Labels = types.Labels{}
@@ -212,11 +234,22 @@ func replicas(project string, svc types.ServiceConfig) types.ServiceConfig {
 	return app
 }
 
-func sortedKeys(s types.Services) []string {
-	keys := make([]string, 0, len(s))
-	for k := range s {
-		keys = append(keys, k)
+func withoutAliases(nets map[string]*types.ServiceNetworkConfig) map[string]*types.ServiceNetworkConfig {
+	if nets == nil {
+		return nil
 	}
-	sort.Strings(keys)
-	return keys
+	out := map[string]*types.ServiceNetworkConfig{}
+	for n, cfg := range nets {
+		if cfg != nil {
+			c := *cfg
+			c.Aliases = nil
+			cfg = &c
+		}
+		out[n] = cfg
+	}
+	return out
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	return slices.Sorted(maps.Keys(m))
 }

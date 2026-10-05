@@ -58,8 +58,9 @@ func Bootstrap(svc config.Service) string {
 	for _, port := range targets(svc) {
 		name := clusterName(port)
 		listeners = append(listeners, obj{
-			"name":    name,
-			"address": obj{"socket_address": obj{"address": "0.0.0.0", "port_value": port}},
+			"name": name,
+			// Dual stack, so IPv6 clients connect too (fallback in Entrypoint).
+			"address": obj{"socket_address": obj{"address": "::", "ipv4_compat": true, "port_value": port}},
 			"filter_chains": []any{obj{"filters": []any{obj{
 				"name": "envoy.filters.network.http_connection_manager",
 				"typed_config": obj{
@@ -216,10 +217,16 @@ func Hostnames(cds string) ([]string, error) {
 	return out, nil
 }
 
+// hasIPv6 fails on a kernel without IPv6 (ipv6.disable=1), where Envoy cannot
+// open the dual-stack listeners; they fall back to IPv4 only. IPv6 disabled
+// by sysctl, as on an IPv4-only Docker network, still opens them.
+const hasIPv6 = `[ -e /proc/net/if_inet6 ]`
+
 // Entrypoint seeds the cluster file only when the container has none yet, so
 // a restart keeps the last list Bouncer wrote.
 func Entrypoint() []string {
-	return []string{"bash", "-c", `mkdir -p ` + ClusterDir + ` && ` +
+	return []string{"bash", "-c", hasIPv6 + ` || BOUNCER_BOOTSTRAP="${BOUNCER_BOOTSTRAP//'"address":"::","ipv4_compat":true'/'"address":"0.0.0.0"'}"; ` +
+		`mkdir -p ` + ClusterDir + ` && ` +
 		`{ [ -f ` + ClusterFile + ` ] || printf '%s' "$BOUNCER_CDS" > ` + ClusterFile + `; } && ` +
 		`exec envoy --config-yaml "$BOUNCER_BOOTSTRAP" --log-level warn`}
 }

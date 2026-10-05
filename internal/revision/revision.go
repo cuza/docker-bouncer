@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
+	"github.com/compose-spec/compose-go/v2/loader"
+	composetransform "github.com/compose-spec/compose-go/v2/transform"
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/cuza/docker-bouncer/internal/transform"
 	"github.com/docker/cli/pkg/kvfile"
@@ -44,7 +46,7 @@ const (
 )
 
 var revisionLabel = map[string]bool{LabelRevision: true, LabelSpec: true, LabelSpecHash: true,
-	LabelHistory: true, LabelUpID: true, LabelTime: true}
+	LabelHistory: true, LabelUpID: true, LabelTime: true, transform.LabelInvocation: true, transform.LabelVersion: true, transform.LabelFormat: true}
 
 // The `raw` env_file format is registered by the docker compose CLI, not by
 // compose-go; register the same parser (docker run --env-file semantics).
@@ -66,12 +68,14 @@ type Entry struct {
 	Revision int             `json:"revision"`
 	Time     time.Time       `json:"time"`
 	UpID     string          `json:"up_id"`
-	Spec     json.RawMessage `json:"spec"` // the stored JSON, see Encode
+	Spec     json.RawMessage `json:"spec"`              // the stored JSON, see Encode
+	Version  string          `json:"version,omitempty"` // of the CLI that made it
 }
 
 // stored is what a spec label holds. EnvFile.Required does not survive
 // compose-go's JSON (OptOut is omitzero and true counts as zero), so it is
-// kept alongside.
+// kept alongside; Decode reads absent as true instead, and Encode still
+// writes it so existing spec hashes do not change.
 type stored struct {
 	Service  types.ServiceConfig `json:"service"`
 	Required []bool              `json:"env_files_required,omitempty"`
@@ -225,15 +229,54 @@ func Encode(app types.ServiceConfig) (spec json.RawMessage, hash string, err err
 	return j, hex.EncodeToString(sum[:8]), nil
 }
 
+// Decode reads a spec Encode wrote. compose-go writes some fields to JSON in
+// a form its types cannot unmarshal (extra_hosts as a list, short ulimits,
+// file modes as octal strings, OptOut fields omitted when true), so the JSON
+// is read as a plain document and taken through compose-go's own loader
+// steps (canonical syntax, defaults, decoding), the path a compose file
+// takes. JSON stays the stored format, so existing labels and hashes match.
 func Decode(spec json.RawMessage) (types.ServiceConfig, error) {
-	var st stored
-	if err := json.Unmarshal(spec, &st); err != nil {
+	var st struct {
+		Service any `json:"service"`
+	}
+	d := json.NewDecoder(bytes.NewReader(spec))
+	d.UseNumber()
+	if err := d.Decode(&st); err != nil {
 		return types.ServiceConfig{}, err
 	}
-	for i := range st.Service.EnvFiles {
-		st.Service.EnvFiles[i].Required = types.OptOut(i < len(st.Required) && st.Required[i])
+	model := map[string]any{"services": map[string]any{"s": numbers(st.Service)}}
+	model, err := composetransform.Canonical(model, false)
+	if err == nil {
+		model, err = composetransform.SetDefaultValues(model)
 	}
-	return st.Service, nil
+	var app types.ServiceConfig
+	if err == nil {
+		err = loader.Transform(model["services"].(map[string]any)["s"], &app)
+	}
+	app.Name = ""
+	return app, err
+}
+
+// numbers turns JSON numbers into the ints and floats a YAML document holds,
+// which is what the loader's decoders expect.
+func numbers(v any) any {
+	switch t := v.(type) {
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return int(i)
+		}
+		f, _ := t.Float64()
+		return f
+	case []any:
+		for i := range t {
+			t[i] = numbers(t[i])
+		}
+	case map[string]any:
+		for k := range t {
+			t[k] = numbers(t[k])
+		}
+	}
+	return v
 }
 
 // Stamp returns app with all revision labels. current is the labels of a
@@ -295,7 +338,7 @@ func History(labels map[string]string) ([]Entry, error) {
 		return nil, fmt.Errorf("no revision label: %w", err)
 	}
 	t, _ := time.Parse(time.RFC3339, labels[LabelTime])
-	out := []Entry{{Revision: rev, Time: t, UpID: labels[LabelUpID]}}
+	out := []Entry{{Revision: rev, Time: t, UpID: labels[LabelUpID], Version: labels[transform.LabelVersion]}}
 	if err := unpack(labels[LabelSpec], &out[0].Spec); err != nil {
 		return nil, err
 	}
@@ -306,4 +349,25 @@ func History(labels map[string]string) ([]Entry, error) {
 		}
 	}
 	return append(out, past...), nil
+}
+
+// Relabel writes h (as History returns it: the current revision, then the
+// history) back into a copy of labels: the spec, its hash and the history.
+// Format migrations use it to store migrated payloads.
+func Relabel(labels map[string]string, h []Entry) (map[string]string, error) {
+	out := map[string]string{}
+	for k, v := range labels {
+		out[k] = v
+	}
+	spec, err := pack(h[0].Spec)
+	if err != nil {
+		return nil, err
+	}
+	past, err := pack(h[1:])
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(h[0].Spec)
+	out[LabelSpec], out[LabelSpecHash], out[LabelHistory] = spec, hex.EncodeToString(sum[:8]), past
+	return out, nil
 }

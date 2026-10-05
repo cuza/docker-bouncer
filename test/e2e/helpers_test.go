@@ -32,7 +32,8 @@ var appImage = prefix + "-app"
 func app(tag string) string { return appImage + ":" + tag }
 
 // buildx is the user's buildx plugin, or "". The private config leaves it
-// out: BuildKit's attestations make every build a new image ID.
+// out, so builds use the classic builder; tests that need BuildKit opt in
+// with withBuildx.
 var buildx string
 
 // TestMain builds the test app images and the plugin into a private
@@ -97,7 +98,8 @@ func setup() error {
 	}
 	out, _ := exec.Command("docker", "info", "--format", `{{range .ClientInfo.Plugins}}{{if eq .Name "buildx"}}{{.Path}}{{end}}{{end}}`).Output()
 	buildx = strings.TrimSpace(string(out))
-	build := exec.Command("go", "build", "-o", filepath.Join(dir, "cli-plugins", "docker-bouncer"), ".")
+	// -tags e2e: the plugin's test hooks (internal/cli/hooks_e2e.go).
+	build := exec.Command("go", "build", "-tags", "e2e", "-o", filepath.Join(dir, "cli-plugins", "docker-bouncer"), ".")
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {
 		return fmt.Errorf("build plugin: %v\n%s", err, out)

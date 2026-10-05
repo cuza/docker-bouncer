@@ -21,6 +21,8 @@ import (
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
+	"github.com/moby/moby/client"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -44,6 +46,9 @@ unchanged one is a cached no-op. --no-build skips building.`,
 			ctx := cmd.Context()
 			l, err := load(ctx, dockerCli, pf)
 			if err != nil {
+				return err
+			}
+			if err := checkFormat(ctx, dockerCli, l, true, pf.IgnoreFormat); err != nil {
 				return err
 			}
 			defer l.show(ctx, "up")()
@@ -92,7 +97,8 @@ unchanged one is a cached no-op. --no-build skips building.`,
 // was cancelled.
 func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool, fn func() error) error {
 	name := l.Derived.Project.Name
-	release, err := lock.Acquire(ctx, lock.NewDocker(dockerCli.Client()), name,
+	time.Sleep(e2eLockDelay)
+	release, err := lock.Acquire(ctx, versionLocker{lock.NewDocker(dockerCli.Client())}, name,
 		proxyImage(l), owner(), staleAfter(l), force, time.Now())
 	if err != nil {
 		return Exit(1, err)
@@ -106,6 +112,11 @@ func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool,
 			l.event(id, api.Done, "Released")
 		}
 	}()
+	if l.recheck != nil { // another run may have rewritten the stack since the early check
+		if err := l.recheck(ctx); err != nil {
+			return err
+		}
+	}
 	return fn()
 }
 
@@ -175,10 +186,29 @@ func upPlainAndProxies(ctx context.Context, l *loaded, sel *types.Project) error
 // startStopped starts the Service's stopped replicas (after `stop`, or a host
 // restart) so they count as running: the planner drains old ones and keeps
 // current ones instead of waiting on them until bounce_health_timeout.
+//
+// A replica that was created but never started is removed instead: a run
+// died between creating it and running its revision's pre_start hooks, and
+// starting it would skip them. The bounce creates it again, hooks first.
 func startStopped(ctx context.Context, l *loaded, svc config.Service) error {
 	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc.Name)
-	if err != nil || !slices.ContainsFunc(reps, func(r engine.Replica) bool { return !r.Running }) {
+	if err != nil {
 		return err
+	}
+	stopped := false
+	for _, r := range reps {
+		switch {
+		case r.Running:
+		case r.Started.IsZero():
+			if err := l.Engine.Remove(ctx, r.ID); err != nil {
+				return err
+			}
+		default:
+			stopped = true
+		}
+	}
+	if !stopped {
+		return nil
 	}
 	p, err := l.Derived.Project.WithSelectedServices([]string{transform.AppName(svc.Name)}, types.IgnoreDependencies)
 	if err != nil {
@@ -192,18 +222,20 @@ func startStopped(ctx context.Context, l *loaded, svc config.Service) error {
 	return nil
 }
 
-// current returns the labels of a running replica of the newest revision.
+// current returns the labels of the newest running replica of the newest
+// revision: replicas scaled up later carry the later run's invocation.
 func current(ctx context.Context, l *loaded, svc string) (map[string]string, error) {
 	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc)
 	if err != nil {
 		return nil, err
 	}
 	var best map[string]string
+	var bestCreated time.Time
 	bestRev := -1
 	for _, r := range reps {
 		rev, _ := strconv.Atoi(r.Labels[revision.LabelRevision])
-		if r.Running && rev > bestRev {
-			best, bestRev = r.Labels, rev
+		if r.Running && (rev > bestRev || rev == bestRev && r.Created.After(bestCreated)) {
+			best, bestRev, bestCreated = r.Labels, rev, r.Created
 		}
 	}
 	return best, nil
@@ -220,6 +252,13 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 	if err != nil {
 		return app, err
 	}
+	if cur != nil && app.GetScale() == 0 {
+		l.event("Service "+svc.Name, api.Warning, "Scaling to 0 replicas:", "history lives on the replicas and is lost at 0")
+	}
+	if app.Build != nil && cur[labelImage] != "" && cur[labelImage] != app.Labels[labelImage] &&
+		sameBuild(ctx, l, svc.Name, cur[labelImage], app.Labels[labelImage]) {
+		app.Labels[labelImage] = cur[labelImage] // pinImage's copy
+	}
 	_, hash, err := revision.Encode(app)
 	if err != nil {
 		return app, err
@@ -231,10 +270,14 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 				app.Labels[k] = v
 			}
 		}
+		stamp(&app, l.inv) // bookkeeping, outside the hash: replicas scaled up now record this run
 		return app, nil
 	}
 	app, kept, err := revision.Stamp(app, cur, upID, svc.Spec.HistoryMax, time.Now())
-	warnTrimmed(l, svc, kept)
+	if err == nil {
+		warnTrimmed(l, svc, kept)
+		stamp(&app, l.inv)
+	}
 	return app, err
 }
 
@@ -271,7 +314,7 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 	return (&bounce.Runner{
 		Project: l.Derived.Project.Name, Svc: svc, App: app, N: app.GetScale(),
 		Engine: l.Engine, Proxy: px,
-		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now,
+		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now, Key: l.key,
 	}).Run(ctx)
 }
 
@@ -283,7 +326,7 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 // skipBuilt skips every service with build: (up builds them; undo restores
 // image IDs no registry serves). Otherwise, as docker compose pull, one with
 // build: is pulled only when the user gave it an image:.
-func prePull(ctx context.Context, l *loaded, svcs types.Services, override string, skipBuilt bool, present func(context.Context, string) bool) error {
+func prePull(ctx context.Context, l *loaded, svcs types.Services, override string, skipBuilt bool, present func(ctx context.Context, image, platform string) bool) error {
 	var names []string
 	images := map[string]bool{}
 	for name, svc := range svcs {
@@ -299,12 +342,12 @@ func prePull(ctx context.Context, l *loaded, svcs types.Services, override strin
 			continue
 		case types.PullPolicyAlways:
 		default:
-			if images[svc.Image] || present(ctx, svc.Image) {
+			if images[svc.Image+" "+svc.Platform] || present(ctx, svc.Image, svc.Platform) {
 				continue
 			}
 		}
 		names = append(names, name)
-		images[svc.Image] = true
+		images[svc.Image+" "+svc.Platform] = true
 	}
 	p := &types.Project{Name: l.Derived.Project.Name, WorkingDir: l.Derived.Project.WorkingDir, Services: types.Services{}}
 	for _, n := range names {
@@ -313,7 +356,7 @@ func prePull(ctx context.Context, l *loaded, svcs types.Services, override strin
 		s.DependsOn = nil                     // the dependencies are not in this project
 		p.Services[n] = s
 	}
-	if lockImage := proxyImage(l); override != types.PullPolicyNever && !images[lockImage] && !present(ctx, lockImage) {
+	if lockImage := proxyImage(l); override != types.PullPolicyNever && !images[lockImage+" "] && !present(ctx, lockImage, "") {
 		lock := types.ServiceConfig{Name: "bouncer-lock"}
 		lock.Image, lock.PullPolicy = lockImage, types.PullPolicyAlways
 		p.Services[lock.Name] = lock
@@ -389,6 +432,28 @@ func pinImage(ctx context.Context, l *loaded, app types.ServiceConfig) (types.Se
 	return app, nil
 }
 
+// sameBuild: the image just built holds the platform manifest a running
+// replica pinned to running runs. With BuildKit and the containerd image
+// store an unchanged rebuild is a new image ID, because its provenance
+// attestation changes, while its image manifest does not; keeping the
+// running pin makes it no new revision, so no bounce.
+func sameBuild(ctx context.Context, l *loaded, svc, running, built string) bool {
+	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc)
+	if err != nil {
+		return false
+	}
+	manifests, err := l.Engine.ImageManifests(ctx, built)
+	if err != nil {
+		return false
+	}
+	for _, r := range reps {
+		if r.Running && r.Labels[labelImage] == running && r.Manifest != "" {
+			return slices.Contains(manifests, r.Manifest)
+		}
+	}
+	return false
+}
+
 // repoDigest is ref's repository @ the digest under which it holds the
 // image, or "" when that registry never served it (built or only tagged
 // locally).
@@ -416,9 +481,23 @@ func runImage(app types.ServiceConfig) string {
 	return app.Image
 }
 
-func imagePresent(dockerCli command.Cli) func(context.Context, string) bool {
-	return func(ctx context.Context, image string) bool {
-		_, err := dockerCli.Client().ImageInspect(ctx, image)
-		return err == nil
+// imagePresent: the image is local, for platform (os/arch[/variant]) when
+// one is given: a tag can be held for another platform only, and creating
+// the container would fail.
+func imagePresent(dockerCli command.Cli) func(ctx context.Context, image, platform string) bool {
+	return func(ctx context.Context, image, platform string) bool {
+		if platform == "" {
+			_, err := dockerCli.Client().ImageInspect(ctx, image)
+			return err == nil
+		}
+		f := append(strings.Split(strings.ToLower(platform), "/"), "", "")
+		want := ocispec.Platform{OS: f[0], Architecture: f[1], Variant: f[2]}
+		res, err := dockerCli.Client().ImageInspect(ctx, image, client.ImageInspectWithPlatform(&want))
+		if err != nil { // not held for that platform, or an engine before API 1.49
+			if res, err = dockerCli.Client().ImageInspect(ctx, image); err != nil {
+				return false
+			}
+		}
+		return res.Os == want.OS && res.Architecture == want.Architecture && (want.Variant == "" || res.Variant == want.Variant)
 	}
 }

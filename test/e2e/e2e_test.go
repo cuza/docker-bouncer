@@ -978,19 +978,7 @@ services:
     ports: ["127.0.0.1:%[1]d:8080"]
     x-bouncer: { %[2]s }
 `, port, fast))
-	if buildx == "" {
-		t.Skip("additional_contexts need BuildKit, which Compose uses only through the buildx plugin")
-	}
-	cfg := filepath.Join(t.TempDir(), "cli-plugins")
-	if err := os.MkdirAll(cfg, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for name, target := range map[string]string{"docker-buildx": buildx, "docker-bouncer": filepath.Join(os.Getenv("DOCKER_CONFIG"), "cli-plugins", "docker-bouncer")} {
-		if err := os.Symlink(target, filepath.Join(cfg, name)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("DOCKER_CONFIG", filepath.Dir(cfg))
+	withBuildx(t, "additional_contexts need BuildKit, which Compose uses only through the buildx plugin")
 	for dir, body := range map[string]string{
 		"base": "FROM " + app("v1") + "\nLABEL " + label + "\nENV VERSION=from-base\n",
 		"api":  "FROM base\nLABEL " + label + "\n",
@@ -1003,6 +991,55 @@ services:
 	p.mustUp()
 	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "from-base") {
 		t.Fatalf("GET / = %q, want the app built from base's image", body)
+	}
+}
+
+// withBuildx switches the test to a private config holding the user's buildx
+// plugin too, so Compose builds with BuildKit; it skips the test without one.
+func withBuildx(t *testing.T, why string) {
+	t.Helper()
+	if buildx == "" {
+		t.Skip(why)
+	}
+	cfg := filepath.Join(t.TempDir(), "cli-plugins")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"docker-buildx": buildx, "docker-bouncer": filepath.Join(os.Getenv("DOCKER_CONFIG"), "cli-plugins", "docker-bouncer")} {
+		if err := os.Symlink(target, filepath.Join(cfg, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("DOCKER_CONFIG", filepath.Dir(cfg))
+}
+
+// With BuildKit a rebuild of unchanged sources is a new image ID (its
+// attestations differ), yet the same image: no bounce. A change still bounces.
+func TestBuildxUnchangedRebuildIsNoop(t *testing.T) {
+	label := pruneBuilt(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    build: ./ctx
+    expose: ["8080"]
+    x-bouncer: { %s, drain_method_params: { delay: 1s } }
+`, fast))
+	withBuildx(t, "BuildKit builds go through the buildx plugin")
+	dockerfile := filepath.Join(p.dir, "ctx", "Dockerfile")
+	if err := os.MkdirAll(filepath.Dir(dockerfile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=one\n")
+	p.mustUp()
+	before := p.replicas("api")
+	p.mustUp()
+	if h := p.history("api"); len(h) != 1 || !slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("an unchanged rebuild bounced: history %q", h)
+	}
+	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=two\n")
+	p.mustUp()
+	if h := p.history("api"); len(h) != 2 || slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("a changed build must bounce: history %q", h)
 	}
 }
 
@@ -1071,6 +1108,10 @@ func TestServiceNamespaceReferencesRejected(t *testing.T) {
 		"ipc":          {"", "ipc: service:api", "ipc service:api points at api's proxy"},
 		"pid":          {"", "pid: service:api", "pid service:api points at api's proxy"},
 		"volumes_from": {"", "volumes_from: [api]", "volumes_from api points at api's proxy"},
+		"container":    {"network_mode: container:other", "", "network_mode container:other cannot be set on a bouncer service"},
+		"service":      {"network_mode: service:other", "", "network_mode service:other cannot be set on a bouncer service"},
+		"link_local":   {"networks: { default: { link_local_ips: [169.254.0.10] } }", "", "networks.default.link_local_ips cannot be set"},
+		"label":        {"", "labels: { dev.cuza.bouncer.role: replica }", "label dev.cuza.bouncer.role uses the reserved"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := project(t, fmt.Sprintf(`
@@ -1216,5 +1257,159 @@ func TestUpgradesPassThroughProxy(t *testing.T) {
 		if got := upgrade(t, port, typ); got != want {
 			t.Errorf("Upgrade: %s got %d, want %d", typ, got, want)
 		}
+	}
+}
+
+// On a network with IPv6, clients reach the proxy over either family.
+func TestIPv6Clients(t *testing.T) {
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: bouncer-e2e-app:v1
+    expose: ["8080"]
+    networks: [dual]
+    x-bouncer: { %s }
+networks:
+  dual:
+    enable_ipv6: true
+`, fast))
+	p.mustUp()
+	for _, field := range []string{"IPAddress", "GlobalIPv6Address"} {
+		ip := docker(t, "inspect", "-f", "{{range .NetworkSettings.Networks}}{{."+field+"}}{{end}}", p.proxy("api"))
+		if ip == "" {
+			t.Fatalf("proxy has no %s", field)
+		}
+		u := "http://" + net.JoinHostPort(ip, "8080") + "/"
+		if out := docker(t, "run", "--rm", "--network", p.name+"_dual", "curlimages/curl:8.16.0", "-sSg", "--max-time", "10", u); !strings.Contains(out, "v1") {
+			t.Fatalf("GET %s = %q", u, out)
+		}
+	}
+}
+
+// pre_start hooks run before the new replicas start on every bounce and
+// undo, as Compose runs them for a recreated service; a failing hook fails
+// the bounce and the old replicas keep serving.
+func TestPreStartRunsOnBounceAndUndo(t *testing.T) {
+	port := freePort(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: bouncer-e2e-app:v1
+    ports: ["127.0.0.1:%d:8080"]
+    volumes: ["./hooks:/hooks", "/scratch"]
+    pre_start:
+      - entrypoint: ["sh", "-c", "echo $$VERSION >> /hooks/log"]
+    x-bouncer: { %s, drain_method_params: { delay: 1s } }
+`, port, fast))
+	if err := os.MkdirAll(filepath.Join(p.dir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ran := func(want ...string) {
+		t.Helper()
+		b, _ := os.ReadFile(filepath.Join(p.dir, "hooks", "log"))
+		if got := strings.Fields(string(b)); !slices.Equal(got, want) {
+			t.Fatalf("hooks ran for %q, want %q", got, want)
+		}
+	}
+	p.mustUp()
+	ran("v1")
+	p.mustUp()
+	ran("v1") // no bounce, no hook
+	p.write(strings.Replace(p.yaml, ":v1", ":v2", 1))
+	p.mustUp()
+	ran("v1", "v2")
+	if out, code := p.bouncer("undo"); code != 0 {
+		t.Fatalf("undo: %d\n%s", code, out)
+	}
+	ran("v1", "v2", "v1")
+	p.write(strings.Replace(strings.Replace(p.yaml, ":v2", ":v1", 1), ">> /hooks/log", ">> /hooks/log; echo migration-failed >&2; exit 3", 1))
+	before := p.replicas("api")
+	volumes := docker(t, "volume", "ls", "-q")
+	if out, code := p.bouncer("up"); code != 1 || !strings.Contains(out, "pre_start[0]: exited with 3") || !strings.Contains(out, "migration-failed") {
+		t.Fatalf("a failing hook: exit %d, want 1 with its exit code and output\n%s", code, out)
+	}
+	// The hook and the unstarted replica are gone, with the replica's
+	// anonymous volume.
+	if ids := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.hook=pre_start"); len(ids) != 0 {
+		t.Fatalf("hook containers left: %v", ids)
+	}
+	if after := docker(t, "volume", "ls", "-q"); after != volumes {
+		t.Fatalf("volumes leaked:\nbefore %s\nafter %s", volumes, after)
+	}
+	ran("v1", "v2", "v1", "v1")
+	if !slices.Equal(p.replicas("api"), before) {
+		t.Fatalf("a failing hook must leave the old replicas alone")
+	}
+	if body := mustGet(t, url(port, "/")); !strings.Contains(body, "v1") {
+		t.Fatalf("GET / = %q", body)
+	}
+}
+
+// Replicas get a provider's injected environment, as a plain dependent does,
+// on the first up and in every step of a bounce.
+func TestProviderEnvironmentReachesReplicas(t *testing.T) {
+	dir := t.TempDir()
+	provider := filepath.Join(dir, "provider")
+	writeFile(t, provider, "#!/bin/sh\ncase \" $* \" in *\" up \"*) echo '{\"type\":\"setenv\",\"message\":\"URL=from-provider\"}';; esac\n")
+	if err := os.Chmod(provider, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := project(t, fmt.Sprintf(`
+services:
+  db:
+    provider: { type: %s }
+  api:
+    image: bouncer-e2e-app:v1
+    depends_on: [db]
+    expose: ["8080"]
+    deploy: { replicas: 3 }
+    x-bouncer: { %s, bounce_overprovision_factor: 0.33, drain_method_params: { delay: 1s } }
+`, provider, fast))
+	check := func(when string) {
+		t.Helper()
+		for _, id := range p.replicas("api") {
+			if got := docker(t, "exec", id, "sh", "-c", "echo $DB_URL"); got != "from-provider" {
+				t.Fatalf("DB_URL = %q in %s after %s", got, id, when)
+			}
+		}
+	}
+	p.mustUp()
+	check("the first up")
+	p.write(strings.Replace(p.yaml, ":v1", ":v2", 1))
+	p.mustUp()
+	check("a bounce in three steps")
+}
+
+// A Service with platform: is pulled for that platform when the local copy
+// of its tag is another platform's. The Service runs the host's platform and
+// only the local copy is foreign, so no emulation is needed.
+func TestPlatformPullsWhenOnlyAnotherIsLocal(t *testing.T) {
+	const image = "traefik/whoami:v1.11.0"
+	native, other := "linux/arm64", "linux/amd64"
+	if docker(t, "info", "-f", "{{.Architecture}}") == "x86_64" {
+		native, other = other, native
+	}
+	exec.Command("docker", "rmi", "-f", image).Run()
+	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", image).Run() })
+	docker(t, "pull", "-q", "--platform", other, image)
+	port := freePort(t)
+	p := project(t, fmt.Sprintf(`
+services:
+  api:
+    image: %s
+    platform: %s
+    ports: ["127.0.0.1:%d:80"]
+    x-bouncer: { %s }
+`, image, native, port, fast))
+	p.mustUp()
+	mustGet(t, url(port, "/"))
+	reps := p.replicas("api")
+	if len(reps) != 1 {
+		t.Fatalf("%d replicas", len(reps))
+	}
+	// The manifest a container runs is known with the containerd image store.
+	got := docker(t, "inspect", "-f", "{{with .ImageManifestDescriptor}}{{.Platform.OS}}/{{.Platform.Architecture}}{{end}}", reps[0])
+	if got != "" && got != native {
+		t.Fatalf("replica runs %s, want %s", got, native)
 	}
 }

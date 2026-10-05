@@ -130,6 +130,19 @@ func TestExposeAcceptsProtocolSuffixAndRejectsRanges(t *testing.T) {
 	}
 }
 
+// A rejected port is the only problem reported: the service has ports.
+func TestRejectedPortIsTheOnlyProblem(t *testing.T) {
+	for _, s := range []types.ServiceConfig{
+		svc(map[string]any{}, nil, "8000-8002"),
+		svc(map[string]any{}, []types.ServicePortConfig{{Target: 80, Protocol: "udp"}}),
+	} {
+		_, err := Parse(s)
+		if err == nil || len(err.(*Error).Problems) != 1 {
+			t.Fatalf("want one problem, got %v", err)
+		}
+	}
+}
+
 func TestHTTPDrainNeedsIsSafeToKill(t *testing.T) {
 	_, err := Parse(svc(map[string]any{"drain_method": "http",
 		"drain_method_params": map[string]any{"drain": map[string]any{"path": "/drain"}}}, nil, "8080"))
@@ -191,5 +204,17 @@ func TestUpgradeTypes(t *testing.T) {
 	}
 	if _, err := Parse(svc(map[string]any{"upgrade_types": []any{"h2c", "x-custom_1.0~", "a!#$%&'*+^`|"}}, nil, "8080")); err != nil {
 		t.Fatalf("tchar values must pass: %v", err)
+	}
+}
+
+// Compose rejects per_replica pre_start hooks; a Service does too, so the
+// first up, a bounce and an undo all refuse it instead of running it once.
+func TestPerReplicaPreStartIsRejected(t *testing.T) {
+	s := svc(map[string]any{}, nil, "8080")
+	s.PreStart = []types.PreStartHook{{}, {PerReplica: true}}
+	_, err := Parse(s)
+	want := `service "api": pre_start[1]: per_replica is not yet supported; remove per_replica or set it to false`
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
 	}
 }

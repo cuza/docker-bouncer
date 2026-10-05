@@ -96,6 +96,10 @@ func (w *world) Replicas(context.Context, string, string) ([]engine.Replica, err
 func (w *world) Container(context.Context, string, map[string]string) (*engine.Replica, error) {
 	return nil, nil
 }
+func (w *world) Start(context.Context, string) error               { return nil }
+func (w *world) RemoveKeepVolumes(context.Context, string) error   { return nil }
+func (w *world) Logs(context.Context, string, int) (string, error) { return "", nil }
+
 func (w *world) Stop(_ context.Context, id string) error {
 	w.events = append(w.events, "stop:"+id)
 	w.stopped = append(w.stopped, id)
@@ -118,6 +122,7 @@ func (w *world) Remove(_ context.Context, id string) error {
 }
 func (w *world) Exec(context.Context, string, []string, ...string) (string, error) { return "", nil }
 func (w *world) Image(context.Context, string) (string, []string, error)           { return "", nil, nil }
+func (w *world) ImageManifests(context.Context, string) ([]string, error)          { return nil, nil }
 func (w *world) Wait(context.Context, string, time.Duration)                       { w.now = w.now.Add(5 * time.Second) }
 
 // engine.Proxy: only listed hosts appear, healthy if running (new ones only when newHealthy).

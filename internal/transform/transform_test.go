@@ -46,7 +46,19 @@ func TestProxyTakesNamePortsAndAliases(t *testing.T) {
 }
 
 func TestReplicasLoseHostPortsAndAliases(t *testing.T) {
-	r, _ := Apply(project())
+	p := project()
+	set(p, "api", func(s *types.ServiceConfig) {
+		h := types.PreStartHook{}
+		h.Networks = map[string]*types.ServiceNetworkConfig{"default": {Aliases: []string{"public-api"}}}
+		s.PreStart = []types.PreStartHook{h}
+	})
+	r, _ := Apply(p)
+	if n := r.Project.Services["api-app"].PreStart[0].Networks["default"]; n == nil || len(n.Aliases) != 0 {
+		t.Fatal("pre_start hooks keep the network but not the alias")
+	}
+	if len(p.Services["api"].PreStart[0].Networks["default"].Aliases) != 1 {
+		t.Fatal("the user's hook must keep its alias")
+	}
 	app := r.Project.Services["api-app"]
 	if app.Image != "registry/api@sha256:1" || len(app.Ports) != 0 {
 		t.Fatalf("app: %+v", app)
@@ -178,6 +190,21 @@ func TestNamespaceAndNameRejections(t *testing.T) {
 			delete(p.Services, "worker")
 			p.DisabledServices = types.Services{"worker": w}
 		}, "ipc service:api points"},
+		"container network on a service": {func(p *types.Project) {
+			set(p, "api", func(s *types.ServiceConfig) { s.NetworkMode = "container:other" })
+		}, "network_mode container:other cannot"},
+		"plain service network on a service": {func(p *types.Project) {
+			set(p, "api", func(s *types.ServiceConfig) { s.NetworkMode = "service:worker" })
+		}, "network_mode service:worker cannot"},
+		"link_local_ips on a service": {func(p *types.Project) {
+			set(p, "api", func(s *types.ServiceConfig) { s.Networks["default"].LinkLocalIPs = []string{"169.254.0.10"} })
+		}, "networks.default.link_local_ips cannot"},
+		"bouncer label on a plain service": {func(p *types.Project) {
+			set(p, "worker", func(s *types.ServiceConfig) { s.Labels = types.Labels{LabelRole: RoleReplica} })
+		}, `service "worker": label ` + LabelRole + ` uses the reserved ` + LabelPrefix + ` prefix`},
+		"bouncer label on a service": {func(p *types.Project) {
+			set(p, "api", func(s *types.ServiceConfig) { s.Labels = types.Labels{LabelPrefix + "x": "1"} })
+		}, "label " + LabelPrefix + "x uses the reserved"},
 		"long name": {func(p *types.Project) { p.Name = strings.Repeat("p", 51) }, "replica names like " + strings.Repeat("p", 51) + "-api-app-1000 are 64 characters, over the 63-character DNS name limit"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -242,5 +269,17 @@ func TestBuildImageName(t *testing.T) {
 	}
 	if proxy := r.Project.Services["api"]; proxy.Build != nil {
 		t.Fatal("the proxy is never built")
+	}
+}
+
+// A replica carries Bouncer's role and Compose's service label for S-app.
+func TestIsReplica(t *testing.T) {
+	r := map[string]string{LabelRole: RoleReplica, LabelService: "api", "com.docker.compose.service": "api-app"}
+	if !IsReplica(r) {
+		t.Fatal("a replica")
+	}
+	r["com.docker.compose.service"] = "worker"
+	if IsReplica(r) {
+		t.Fatal("another service's container with Bouncer's labels is no replica")
 	}
 }

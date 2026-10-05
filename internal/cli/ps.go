@@ -20,6 +20,9 @@ func psCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := checkFormat(ctx, dockerCli, l, false, pf.IgnoreFormat); err != nil {
+				return err
+			}
 			want := map[string]string{} // service → desired spec hash
 			listed := map[string]map[string]bool{}
 			for _, s := range append(l.Derived.Services, l.Derived.Disabled...) {

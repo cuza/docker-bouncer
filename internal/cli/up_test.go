@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,24 +22,50 @@ import (
 )
 
 type fakeEngine struct {
-	reps    []engine.Replica
-	id      string   // Image's ID; "sha256:<ref>" when empty
-	digests []string // Image's repo digests
+	reps      []engine.Replica
+	id        string          // Image's ID; "sha256:<ref>" when empty
+	digests   []string        // Image's repo digests
+	manifests []string        // ImageManifests
+	hook      *engine.Replica // what Container returns when containers has no answer
+	kept      []string        // RemoveKeepVolumes calls
+	removed   []string        // Remove calls
+	logs      string
+	// Container answers by compose service; images overrides Image's ID.
+	containers map[string]*engine.Replica
+	images     map[string]string
 }
 
 func (f *fakeEngine) Replicas(context.Context, string, string) ([]engine.Replica, error) {
 	return f.reps, nil
 }
-func (f *fakeEngine) Container(context.Context, string, map[string]string) (*engine.Replica, error) {
-	return nil, nil
+func (f *fakeEngine) Container(ctx context.Context, _ string, labels map[string]string) (*engine.Replica, error) {
+	if c, ok := f.containers[labels[api.ServiceLabel]]; ok {
+		return c, ctx.Err()
+	}
+	return f.hook, ctx.Err()
 }
-func (f *fakeEngine) Stop(context.Context, string) error   { return nil }
-func (f *fakeEngine) Remove(context.Context, string) error { return nil }
+func (f *fakeEngine) RemoveKeepVolumes(_ context.Context, id string) error {
+	f.kept = append(f.kept, id)
+	return nil
+}
+func (f *fakeEngine) Logs(context.Context, string, int) (string, error) { return f.logs, nil }
+func (f *fakeEngine) Start(context.Context, string) error               { return nil }
+func (f *fakeEngine) Stop(context.Context, string) error                { return nil }
+func (f *fakeEngine) Remove(_ context.Context, id string) error {
+	f.removed = append(f.removed, id)
+	return nil
+}
 func (f *fakeEngine) Exec(context.Context, string, []string, ...string) (string, error) {
 	return "", nil
 }
 func (f *fakeEngine) Wait(context.Context, string, time.Duration) {}
+func (f *fakeEngine) ImageManifests(context.Context, string) ([]string, error) {
+	return f.manifests, nil
+}
 func (f *fakeEngine) Image(_ context.Context, ref string) (string, []string, error) {
+	if id, ok := f.images[ref]; ok {
+		return id, f.digests, nil
+	}
 	if f.id != "" {
 		return f.id, f.digests, nil
 	}
@@ -145,6 +172,15 @@ func TestDesiredAppBouncesOnlyOnNewImage(t *testing.T) {
 			}
 			up("u1", "1")
 			up("u2", "1") // same image
+			// A BuildKit rebuild: a new ID with the same image manifest.
+			if name == "built" {
+				fe.reps[0].Manifest = "sha256:m1"
+				fe.id, fe.manifests = "sha256:rebuilt", []string{"sha256:m1"}
+				if app := up("u2b", "1"); app.Labels[labelImage] != "sha256:old" {
+					t.Fatalf("an unchanged rebuild must keep the running pin, got %q", app.Labels[labelImage])
+				}
+				fe.manifests = []string{"sha256:m2"}
+			}
 			fe.id, fe.digests = "sha256:new", []string{"registry/api@" + d2}
 			if app := up("u3", "2"); name == "built" && app.Labels[labelImage] != "sha256:new" {
 				t.Fatalf("rebuilt image %q", app.Labels[labelImage])
@@ -268,5 +304,122 @@ func TestDownProject(t *testing.T) {
 	}
 	if len(d.Project.Services) != 1 || len(d.Project.Services["web"].DependsOn) != 0 || d.Project.DisabledServices["api-app"].DependsOn["db"].Condition == "" {
 		t.Fatal("the derived project must not change")
+	}
+}
+
+type recorded struct {
+	api.EventProcessor
+	events []api.Resource
+}
+
+func (r *recorded) On(events ...api.Resource) { r.events = append(r.events, events...) }
+
+// Scaling a Service to 0 warns: its history lives on the replicas.
+func TestScaleToZeroWarns(t *testing.T) {
+	for _, n := range []int{0, 1} {
+		l := fakeLoaded(t)
+		rec := &recorded{}
+		l.Events = rec
+		app, err := desiredApp(context.Background(), l, l.Derived.Services[0], "u1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.Engine.(*fakeEngine).reps = []engine.Replica{{Name: "proj-api-app-1", Running: true, Labels: app.Labels}}
+		a := l.Derived.Project.Services["api-app"]
+		a.SetScale(n)
+		l.Derived.Project.Services["api-app"] = a
+		if _, err := desiredApp(context.Background(), l, l.Derived.Services[0], "u2"); err != nil {
+			t.Fatal(err)
+		}
+		warned := slices.ContainsFunc(rec.events, func(e api.Resource) bool {
+			return e.Status == api.Warning && strings.Contains(e.Text+" "+e.Details, "history lives on the replicas and is lost at 0")
+		})
+		if warned != (n == 0) {
+			t.Fatalf("replicas %d: warned %v, events %+v", n, warned, rec.events)
+		}
+	}
+}
+
+// A pre_start hook's container is removed, its volumes kept, whether it
+// fails (its exit code and output are reported) or the run is cancelled,
+// even while Compose creates it. The fake finds the same container as a
+// leftover of an earlier run first, so both removals count.
+func TestPreStartHookIsAlwaysRemoved(t *testing.T) {
+	for name, tc := range map[string]struct {
+		running bool
+		cancel  bool
+		want    string
+	}{
+		"fails":     {false, false, "api-app pre_start[0]: exited with 3:\nmigration failed"},
+		"cancelled": {true, true, "context canceled"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := service("api", "registry/api:1", "", true)
+			api.PreStart = []types.PreStartHook{{}}
+			l := derive(t, api)
+			app := l.Derived.Project.Services["api-app"]
+			fe := &fakeEngine{
+				reps: []engine.Replica{{ID: "new", Labels: map[string]string{revision.LabelSpecHash: "h"}}},
+				hook: &engine.Replica{ID: "hook", Running: tc.running, ExitCode: 3},
+				logs: "migration failed\n",
+			}
+			l.Engine = fe
+			app.Labels = types.Labels{revision.LabelSpecHash: "h"}
+			ctx, cancel := context.WithCancel(context.Background())
+			if tc.cancel {
+				cancel()
+			}
+			defer cancel()
+			err := (composeScaler{l: l}).preStart(ctx, l.Derived.Project, app)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+			if !slices.Equal(fe.kept, []string{"hook", "hook"}) {
+				t.Fatalf("hook container not removed (keeping volumes): %v", fe.kept)
+			}
+		})
+	}
+}
+
+// A replica created but never started (a run died between creating it and
+// its pre_start hooks) is removed, so the bounce creates it again and runs
+// the hooks; a stopped one is started as before.
+func TestStartStoppedRemovesNeverStarted(t *testing.T) {
+	l := fakeLoaded(t)
+	fe := l.Engine.(*fakeEngine)
+	fe.reps = []engine.Replica{
+		{ID: "live", Running: true, Started: time.Now()},
+		{ID: "created"},
+	}
+	if err := startStopped(context.Background(), l, l.Derived.Services[0]); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fe.removed, []string{"created"}) {
+		t.Fatalf("removed %v, want the never-started replica", fe.removed)
+	}
+}
+
+// A bounce whose replicas differ by more than the spec hash (migrate keys
+// them by spec and format) runs the pre_start hooks for its new replicas
+// too, as for a new revision.
+func TestPreStartFollowsTheBounceKey(t *testing.T) {
+	api := service("api", "registry/api:1", "", true)
+	api.PreStart = []types.PreStartHook{{}}
+	l := derive(t, api)
+	l.Engine = &fakeEngine{reps: []engine.Replica{{ID: "old", Running: true,
+		Labels: map[string]string{revision.LabelSpecHash: "h", transform.LabelFormat: "1.0"}}}}
+	app := l.Derived.Project.Services["api-app"]
+	app.Labels = types.Labels{revision.LabelSpecHash: "h", transform.LabelFormat: "1.1"}
+	for _, tc := range []struct {
+		key  func(map[string]string) string
+		want bool
+	}{
+		{nil, false}, // same revision: its hooks ran
+		{func(l map[string]string) string { return l[revision.LabelSpecHash] + " " + l[transform.LabelFormat] }, true},
+	} {
+		l.key = tc.key
+		if got, err := (composeScaler{l: l}).runsPreStart(context.Background(), app); err != nil || got != tc.want {
+			t.Fatalf("key set %v: runs hooks %v (%v), want %v", tc.key != nil, got, err, tc.want)
+		}
 	}
 }
