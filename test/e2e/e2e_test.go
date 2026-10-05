@@ -1029,14 +1029,14 @@ services:
 	if err := os.MkdirAll(filepath.Dir(dockerfile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=one\n")
+	writeFile(t, dockerfile, "FROM "+app("v1")+"\nLABEL "+label+"\nENV VERSION=one\n")
 	p.mustUp()
 	before := p.replicas("api")
 	p.mustUp()
 	if h := p.history("api"); len(h) != 1 || !slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("an unchanged rebuild bounced: history %q", h)
 	}
-	writeFile(t, dockerfile, "FROM bouncer-e2e-app:v1\nLABEL "+label+"\nENV VERSION=two\n")
+	writeFile(t, dockerfile, "FROM "+app("v1")+"\nLABEL "+label+"\nENV VERSION=two\n")
 	p.mustUp()
 	if h := p.history("api"); len(h) != 2 || slices.Equal(p.replicas("api"), before) {
 		t.Fatalf("a changed build must bounce: history %q", h)
@@ -1265,7 +1265,7 @@ func TestIPv6Clients(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     expose: ["8080"]
     networks: [dual]
     x-bouncer: { %s }
@@ -1294,7 +1294,7 @@ func TestPreStartRunsOnBounceAndUndo(t *testing.T) {
 	p := project(t, fmt.Sprintf(`
 services:
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     ports: ["127.0.0.1:%d:8080"]
     volumes: ["./hooks:/hooks", "/scratch"]
     pre_start:
@@ -1324,7 +1324,7 @@ services:
 	ran("v1", "v2", "v1")
 	p.write(strings.Replace(strings.Replace(p.yaml, ":v2", ":v1", 1), ">> /hooks/log", ">> /hooks/log; echo migration-failed >&2; exit 3", 1))
 	before := p.replicas("api")
-	volumes := docker(t, "volume", "ls", "-q")
+	volumes := strings.Fields(docker(t, "volume", "ls", "-q"))
 	if out, code := p.bouncer("up"); code != 1 || !strings.Contains(out, "pre_start[0]: exited with 3") || !strings.Contains(out, "migration-failed") {
 		t.Fatalf("a failing hook: exit %d, want 1 with its exit code and output\n%s", code, out)
 	}
@@ -1333,8 +1333,22 @@ services:
 	if ids := p.containers("com.docker.compose.project="+p.name, "com.docker.compose.hook=pre_start"); len(ids) != 0 {
 		t.Fatalf("hook containers left: %v", ids)
 	}
-	if after := docker(t, "volume", "ls", "-q"); after != volumes {
-		t.Fatalf("volumes leaked:\nbefore %s\nafter %s", volumes, after)
+	// Other projects on the engine create and remove volumes too: a leak is
+	// a new volume no container uses, still there a moment later.
+	leaked := func() []string {
+		var l []string
+		for _, v := range strings.Fields(docker(t, "volume", "ls", "-q", "--filter", "dangling=true")) {
+			if !slices.Contains(volumes, v) {
+				l = append(l, v)
+			}
+		}
+		return l
+	}
+	if len(leaked()) > 0 {
+		time.Sleep(5 * time.Second)
+		if l := leaked(); len(l) > 0 {
+			t.Fatalf("volumes leaked: %v", l)
+		}
 	}
 	ran("v1", "v2", "v1", "v1")
 	if !slices.Equal(p.replicas("api"), before) {
@@ -1359,7 +1373,7 @@ services:
   db:
     provider: { type: %s }
   api:
-    image: bouncer-e2e-app:v1
+    image: {{APP}}:v1
     depends_on: [db]
     expose: ["8080"]
     deploy: { replicas: 3 }

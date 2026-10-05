@@ -105,6 +105,9 @@ func setup() error {
 		return fmt.Errorf("build plugin: %v\n%s", err, out)
 	}
 	os.Setenv("DOCKER_CONFIG", dir)
+	// The e2e build's hooks apply only where a test sets them on one command.
+	os.Unsetenv("BOUNCER_E2E_FORMAT")
+	os.Unsetenv("BOUNCER_E2E_LOCK_DELAY")
 	os.Unsetenv("DOCKER_CONTEXT")
 	if out, err := exec.Command("docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput(); err != nil {
 		return fmt.Errorf("docker info with the private config: %v\n%s", err, out)
