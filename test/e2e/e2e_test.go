@@ -1008,7 +1008,7 @@ func writeFile(t *testing.T, path, body string) {
 func TestAnonymousVolumesDoNotLeak(t *testing.T) {
 	p := project(t, api(freePort(t), 2, fast+`, drain_method_params: { delay: 1s }`))
 	image := app(fmt.Sprint("vol-", projectSeq.Add(1)))
-	build := exec.Command("docker", "build", "-q", "-t", image, "-")
+	build := exec.Command("docker", "build", "-q", "--force-rm", "-t", image, "-")
 	build.Stdin = strings.NewReader("FROM " + app("v1") + "\nVOLUME /data\n")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
