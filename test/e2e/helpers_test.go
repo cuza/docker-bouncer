@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -221,6 +222,22 @@ func docker(t *testing.T, args ...string) string {
 		t.Fatalf("docker %v: %v\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// hostLock holds a file lock until the test ends, so a test that changes
+// something every run shares runs in one run at a time.
+// ponytail: one host's runs only; a daemon reached from several hosts needs a
+// lock on the daemon (a named container) instead.
+func hostLock(t *testing.T, name string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(os.TempDir(), name+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
 }
 
 // freePort returns a host port that was free a moment ago.

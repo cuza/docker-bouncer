@@ -1403,6 +1403,7 @@ func TestPlatformPullsWhenOnlyAnotherIsLocal(t *testing.T) {
 	if docker(t, "info", "-f", "{{.Architecture}}") == "x86_64" {
 		native, other = other, native
 	}
+	hostLock(t, "bouncer-e2e-whoami") // the image is public: other runs use it too
 	exec.Command("docker", "rmi", "-f", image).Run()
 	t.Cleanup(func() { exec.Command("docker", "rmi", "-f", image).Run() })
 	docker(t, "pull", "-q", "--platform", other, image)
