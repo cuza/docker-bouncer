@@ -130,6 +130,13 @@ func project(t *testing.T, yaml string) *proj {
 		name: fmt.Sprintf("%s-%d", prefix, projectSeq.Add(1))}
 	p.write(yaml)
 	t.Cleanup(func() {
+		// down keeps volumes, as docker compose down without -v does: note
+		// the project's (anonymous ones carry no project label) first.
+		var vols []string
+		for _, id := range p.containers("com.docker.compose.project=" + p.name) {
+			out, _ := exec.Command("docker", "inspect", "-f", `{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}`, id).Output()
+			vols = append(vols, strings.Fields(string(out))...)
+		}
 		if out, code := p.bouncer("down"); code != 0 {
 			t.Logf("down: %d\n%s", code, out)
 		}
@@ -137,6 +144,10 @@ func project(t *testing.T, yaml string) *proj {
 		if ids := p.containers("com.docker.compose.project=" + p.name); len(ids) > 0 {
 			t.Logf("leftover containers after down: %v", ids)
 			exec.Command("docker", append([]string{"rm", "-f"}, ids...)...).Run()
+		}
+		out, _ := exec.Command("docker", "volume", "ls", "-q", "--filter", "label=com.docker.compose.project="+p.name).Output()
+		if vols = append(vols, strings.Fields(string(out))...); len(vols) > 0 {
+			exec.Command("docker", append([]string{"volume", "rm", "-f"}, vols...)...).Run()
 		}
 	})
 	return p
