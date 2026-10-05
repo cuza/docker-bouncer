@@ -136,8 +136,7 @@ func TestDryRunPlainAndProxies(t *testing.T) {
 	hash := func(n string) string { h, _ := compose.ServiceHash(p.Services[n]); return h }
 	at := func(n string, running bool, labels map[string]string) *engine.Replica {
 		labels[api.ConfigHashLabel] = hash(n)
-		labels[api.ImageDigestLabel] = "sha256:" + n
-		return &engine.Replica{Running: running, Labels: labels}
+		return &engine.Replica{Running: running, Labels: labels, ImageID: "sha256:" + n}
 	}
 	fe := &fakeEngine{images: map[string]string{"registry/db:1": "sha256:db", "registry/cache:1": "sha256:cache", "registry/queue:1": "sha256:new"},
 		containers: map[string]*engine.Replica{

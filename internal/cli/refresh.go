@@ -502,8 +502,10 @@ func composeChange(ctx context.Context, l *loaded, s types.ServiceConfig, o refr
 		if d != "" {
 			return "recreate", fmt.Sprintf("%s moved in the registry to %s", s.Image, d), nil
 		}
-		if local, _, err := l.Engine.Image(ctx, s.Image); err == nil && local != c.Labels[api.ImageDigestLabel] {
-			return "recreate", fmt.Sprintf("image %s moved from %s to %s", s.Image, shortImage(c.Labels[api.ImageDigestLabel]), shortImage(local)), nil
+		// The container's image ID: Compose's image label may hold a
+		// platform manifest digest instead.
+		if local, _, err := l.Engine.Image(ctx, s.Image); err == nil && local != c.ImageID {
+			return "recreate", fmt.Sprintf("image %s moved from %s to %s", s.Image, shortImage(c.ImageID), shortImage(local)), nil
 		}
 	}
 	if !c.Running {
