@@ -198,6 +198,13 @@ func Parse(svc types.ServiceConfig) (*Service, error) {
 			s.UpgradeTypes = append(s.UpgradeTypes, u)
 		}
 	}
+	// Compose rejects these before running any hook; Bouncer runs the hooks
+	// of a bounce itself, so it must reject them too.
+	for i, h := range svc.PreStart {
+		if h.PerReplica {
+			bad("pre_start[%d]: per_replica is not yet supported; remove per_replica or set it to false", i)
+		}
+	}
 	if svc.ContainerName != "" {
 		bad("container_name cannot be set on a bouncer service (it runs several replicas)")
 	}

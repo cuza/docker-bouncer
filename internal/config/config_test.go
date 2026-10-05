@@ -206,3 +206,15 @@ func TestUpgradeTypes(t *testing.T) {
 		t.Fatalf("tchar values must pass: %v", err)
 	}
 }
+
+// Compose rejects per_replica pre_start hooks; a Service does too, so the
+// first up, a bounce and an undo all refuse it instead of running it once.
+func TestPerReplicaPreStartIsRejected(t *testing.T) {
+	s := svc(map[string]any{}, nil, "8080")
+	s.PreStart = []types.PreStartHook{{}, {PerReplica: true}}
+	_, err := Parse(s)
+	want := `service "api": pre_start[1]: per_replica is not yet supported; remove per_replica or set it to false`
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %q", err, want)
+	}
+}
