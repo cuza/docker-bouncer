@@ -947,8 +947,17 @@ services:
 func pruneBuilt(t *testing.T) string {
 	l := fmt.Sprintf("%s-build=%d", prefix, projectSeq.Add(1))
 	t.Cleanup(func() {
-		exec.Command("docker", "container", "prune", "-f", "--filter", "label="+l).Run()
-		exec.Command("docker", "image", "prune", "-af", "--filter", "label="+l).Run()
+		// The engine runs one prune of a kind at a time and refuses the
+		// others, so a concurrent run's prune is waited out.
+		for _, prune := range [][]string{{"container", "prune", "-f"}, {"image", "prune", "-af"}} {
+			for range 30 {
+				out, err := exec.Command("docker", append(prune, "--filter", "label="+l)...).CombinedOutput()
+				if err == nil || !strings.Contains(string(out), "already running") {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+		}
 	})
 	return l
 }
