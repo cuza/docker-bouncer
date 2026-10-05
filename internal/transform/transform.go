@@ -22,6 +22,14 @@ const (
 	LabelRole      = LabelPrefix + "role"
 	LabelService   = LabelPrefix + "service"
 	LabelAdminPort = LabelPrefix + "admin-port"
+	// LabelInvocation records how a replica's up or undo loaded its project,
+	// so refresh can load it the same way.
+	LabelInvocation = LabelPrefix + "invocation"
+	// LabelVersion (the CLI's version, informational) and LabelFormat (the
+	// storage format, see package format) are on every replica and lock,
+	// never on a proxy: a CLI upgrade would change its config hash.
+	LabelVersion = LabelPrefix + "version"
+	LabelFormat  = LabelPrefix + "format"
 
 	RoleProxy   = "proxy"
 	RoleReplica = "replica"

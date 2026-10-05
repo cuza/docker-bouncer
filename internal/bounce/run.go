@@ -36,6 +36,9 @@ type Runner struct {
 	Scaler  Scaler
 	Events  api.EventProcessor
 	Now     func() time.Time
+	// Key is what makes a replica current, from its labels; nil is the
+	// spec hash. migrate adds the format, to replace same-spec replicas.
+	Key func(labels map[string]string) string
 
 	runStart     time.Time
 	healthySince map[string]time.Time
@@ -61,9 +64,13 @@ func (r *Runner) observe(ctx context.Context) (State, error) {
 		return State{}, err
 	}
 	now := r.Now()
-	st := State{N: r.N, Spec: r.Svc.Spec, Desired: r.App.Labels[revision.LabelSpecHash], Now: now, RunStart: r.runStart}
+	key := r.Key
+	if key == nil {
+		key = func(l map[string]string) string { return l[revision.LabelSpecHash] }
+	}
+	st := State{N: r.N, Spec: r.Svc.Spec, Desired: key(r.App.Labels), Now: now, RunStart: r.runStart}
 	for _, rep := range reps {
-		o := Observed{Replica: rep, Hash: rep.Labels[revision.LabelSpecHash], EnvoyHealthy: health[rep.Name]}
+		o := Observed{Replica: rep, Hash: key(rep.Labels), EnvoyHealthy: health[rep.Name]}
 		if o.EnvoyHealthy && listable(o) {
 			if _, ok := r.healthySince[rep.Name]; !ok {
 				r.healthySince[rep.Name] = now

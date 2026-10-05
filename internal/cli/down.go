@@ -17,6 +17,9 @@ func downCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := checkFormat(cmd.Context(), dockerCli, l, false, pf.IgnoreFormat); err != nil {
+				return err
+			}
 			defer l.show(cmd.Context(), "down")()
 			l.event("Project "+l.Derived.Project.Name, api.Warning, "Deleting revision history:", "it lives on the replicas")
 			p := downProject(l.Derived)

@@ -48,6 +48,9 @@ unchanged one is a cached no-op. --no-build skips building.`,
 			if err != nil {
 				return err
 			}
+			if err := checkFormat(ctx, dockerCli, l, true, pf.IgnoreFormat); err != nil {
+				return err
+			}
 			defer l.show(ctx, "up")()
 			switch pull {
 			case "", types.PullPolicyAlways, types.PullPolicyMissing, types.PullPolicyNever:
@@ -94,7 +97,8 @@ unchanged one is a cached no-op. --no-build skips building.`,
 // was cancelled.
 func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool, fn func() error) error {
 	name := l.Derived.Project.Name
-	release, err := lock.Acquire(ctx, lock.NewDocker(dockerCli.Client()), name,
+	time.Sleep(e2eLockDelay)
+	release, err := lock.Acquire(ctx, versionLocker{lock.NewDocker(dockerCli.Client())}, name,
 		proxyImage(l), owner(), staleAfter(l), force, time.Now())
 	if err != nil {
 		return Exit(1, err)
@@ -108,6 +112,11 @@ func withLock(ctx context.Context, dockerCli command.Cli, l *loaded, force bool,
 			l.event(id, api.Done, "Released")
 		}
 	}()
+	if l.recheck != nil { // another run may have rewritten the stack since the early check
+		if err := l.recheck(ctx); err != nil {
+			return err
+		}
+	}
 	return fn()
 }
 
@@ -213,18 +222,20 @@ func startStopped(ctx context.Context, l *loaded, svc config.Service) error {
 	return nil
 }
 
-// current returns the labels of a running replica of the newest revision.
+// current returns the labels of the newest running replica of the newest
+// revision: replicas scaled up later carry the later run's invocation.
 func current(ctx context.Context, l *loaded, svc string) (map[string]string, error) {
 	reps, err := l.Engine.Replicas(ctx, l.Derived.Project.Name, svc)
 	if err != nil {
 		return nil, err
 	}
 	var best map[string]string
+	var bestCreated time.Time
 	bestRev := -1
 	for _, r := range reps {
 		rev, _ := strconv.Atoi(r.Labels[revision.LabelRevision])
-		if r.Running && rev > bestRev {
-			best, bestRev = r.Labels, rev
+		if r.Running && (rev > bestRev || rev == bestRev && r.Created.After(bestCreated)) {
+			best, bestRev, bestCreated = r.Labels, rev, r.Created
 		}
 	}
 	return best, nil
@@ -259,10 +270,14 @@ func desiredApp(ctx context.Context, l *loaded, svc config.Service, upID string)
 				app.Labels[k] = v
 			}
 		}
+		stamp(&app, l.inv) // bookkeeping, outside the hash: replicas scaled up now record this run
 		return app, nil
 	}
 	app, kept, err := revision.Stamp(app, cur, upID, svc.Spec.HistoryMax, time.Now())
-	warnTrimmed(l, svc, kept)
+	if err == nil {
+		warnTrimmed(l, svc, kept)
+		stamp(&app, l.inv)
+	}
 	return app, err
 }
 
@@ -299,7 +314,7 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 	return (&bounce.Runner{
 		Project: l.Derived.Project.Name, Svc: svc, App: app, N: app.GetScale(),
 		Engine: l.Engine, Proxy: px,
-		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now,
+		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now, Key: l.key,
 	}).Run(ctx)
 }
 

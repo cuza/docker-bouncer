@@ -73,7 +73,8 @@ func setup() error {
 	}
 	out, _ := exec.Command("docker", "info", "--format", `{{range .ClientInfo.Plugins}}{{if eq .Name "buildx"}}{{.Path}}{{end}}{{end}}`).Output()
 	buildx = strings.TrimSpace(string(out))
-	build := exec.Command("go", "build", "-o", filepath.Join(dir, "cli-plugins", "docker-bouncer"), ".")
+	// -tags e2e: the plugin's test hooks (internal/cli/hooks_e2e.go).
+	build := exec.Command("go", "build", "-tags", "e2e", "-o", filepath.Join(dir, "cli-plugins", "docker-bouncer"), ".")
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {
 		return fmt.Errorf("build plugin: %v\n%s", err, out)

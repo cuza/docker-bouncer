@@ -17,6 +17,7 @@ type Replica struct {
 	Created      time.Time
 	Started      time.Time // last start; zero if never started or unparsable
 	Labels       map[string]string
+	ImageID      string // the image the container runs
 }
 
 type Engine interface {

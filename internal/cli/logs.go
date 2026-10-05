@@ -17,6 +17,9 @@ func logsCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := checkFormat(cmd.Context(), dockerCli, l, false, pf.IgnoreFormat); err != nil {
+				return err
+			}
 			target := args[0]
 			if !proxy {
 				if _, ok := l.Derived.Project.Services[transform.AppName(target)]; ok {

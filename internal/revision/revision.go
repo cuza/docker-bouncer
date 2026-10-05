@@ -46,7 +46,7 @@ const (
 )
 
 var revisionLabel = map[string]bool{LabelRevision: true, LabelSpec: true, LabelSpecHash: true,
-	LabelHistory: true, LabelUpID: true, LabelTime: true}
+	LabelHistory: true, LabelUpID: true, LabelTime: true, transform.LabelInvocation: true, transform.LabelVersion: true, transform.LabelFormat: true}
 
 // The `raw` env_file format is registered by the docker compose CLI, not by
 // compose-go; register the same parser (docker run --env-file semantics).
@@ -68,7 +68,8 @@ type Entry struct {
 	Revision int             `json:"revision"`
 	Time     time.Time       `json:"time"`
 	UpID     string          `json:"up_id"`
-	Spec     json.RawMessage `json:"spec"` // the stored JSON, see Encode
+	Spec     json.RawMessage `json:"spec"`              // the stored JSON, see Encode
+	Version  string          `json:"version,omitempty"` // of the CLI that made it
 }
 
 // stored is what a spec label holds. EnvFile.Required does not survive
@@ -337,7 +338,7 @@ func History(labels map[string]string) ([]Entry, error) {
 		return nil, fmt.Errorf("no revision label: %w", err)
 	}
 	t, _ := time.Parse(time.RFC3339, labels[LabelTime])
-	out := []Entry{{Revision: rev, Time: t, UpID: labels[LabelUpID]}}
+	out := []Entry{{Revision: rev, Time: t, UpID: labels[LabelUpID], Version: labels[transform.LabelVersion]}}
 	if err := unpack(labels[LabelSpec], &out[0].Spec); err != nil {
 		return nil, err
 	}
@@ -348,4 +349,25 @@ func History(labels map[string]string) ([]Entry, error) {
 		}
 	}
 	return append(out, past...), nil
+}
+
+// Relabel writes h (as History returns it: the current revision, then the
+// history) back into a copy of labels: the spec, its hash and the history.
+// Format migrations use it to store migrated payloads.
+func Relabel(labels map[string]string, h []Entry) (map[string]string, error) {
+	out := map[string]string{}
+	for k, v := range labels {
+		out[k] = v
+	}
+	spec, err := pack(h[0].Spec)
+	if err != nil {
+		return nil, err
+	}
+	past, err := pack(h[1:])
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(h[0].Spec)
+	out[LabelSpec], out[LabelSpecHash], out[LabelHistory] = spec, hex.EncodeToString(sum[:8]), past
+	return out, nil
 }

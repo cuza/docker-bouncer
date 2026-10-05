@@ -38,7 +38,7 @@ func (d *docker) list(ctx context.Context, project string, labels map[string]str
 			return nil, err
 		}
 		c := in.Container
-		r := Replica{ID: c.ID, Name: trimSlash(c.Name), Running: c.State != nil && c.State.Running, Labels: c.Config.Labels}
+		r := Replica{ID: c.ID, Name: trimSlash(c.Name), Running: c.State != nil && c.State.Running, Labels: c.Config.Labels, ImageID: c.Image}
 		if c.State != nil && c.State.Health != nil {
 			r.DockerHealth = string(c.State.Health.Status)
 		}

@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,8 +34,35 @@ func lsCmd(dockerCli command.Cli) *cobra.Command {
 			if err != nil {
 				return Exit(1, err)
 			}
-			return lsTable(dockerCli.Out(), append(res.Items, locks.Items...))
+			all := append(res.Items, locks.Items...)
+			if err := lsTable(dockerCli.Out(), all); err != nil {
+				return err
+			}
+			for _, h := range lsHints(all) {
+				fmt.Fprintln(dockerCli.Err(), h)
+			}
+			return nil
 		}}
+}
+
+// lsHints are the format warnings each project gets from a read-only
+// command: a newer or unreadable format, or a hint to migrate.
+func lsHints(cs []container.Summary) []string {
+	stacks := map[string][]map[string]string{}
+	for _, c := range cs {
+		if r := c.Labels[transform.LabelRole]; r == transform.RoleReplica || r == transform.RoleLock {
+			p := c.Labels[api.ProjectLabel]
+			stacks[p] = append(stacks[p], c.Labels)
+		}
+	}
+	var out []string
+	for _, p := range slices.Sorted(maps.Keys(stacks)) {
+		_, notes := formatCheck(p, stacks[p], false, false)
+		for _, n := range notes {
+			out = append(out, n.Text)
+		}
+	}
+	return out
 }
 
 // lsTable has a row per Service of the Bouncer containers and locks in cs.
@@ -44,6 +74,7 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 	type row struct {
 		rev, total, happy, running int
 		hashes                     map[string]bool
+		version, format            string // of the newest replicas
 	}
 	rows := map[[2]string]*row{}
 	for _, c := range cs {
@@ -72,8 +103,9 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 				r.happy++
 			}
 		}
-		if n, _ := strconv.Atoi(c.Labels[revision.LabelRevision]); n > r.rev {
-			r.rev = n
+		if n, _ := strconv.Atoi(c.Labels[revision.LabelRevision]); n > r.rev || r.version == "" {
+			r.rev = max(r.rev, n)
+			r.version, r.format = c.Labels[transform.LabelVersion], c.Labels[transform.LabelFormat]
 		}
 		r.hashes[c.Labels[revision.LabelSpecHash]] = true
 	}
@@ -83,7 +115,7 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i][0]+"/"+keys[i][1] < keys[j][0]+"/"+keys[j][1] })
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "PROJECT\tSERVICE\tREVISION\tREPLICAS\tSTATUS\tCONFIG FILES")
+	fmt.Fprintln(w, "PROJECT\tSERVICE\tREVISION\tREPLICAS\tSTATUS\tVERSION\tFORMAT\tCONFIG FILES")
 	for _, k := range keys {
 		r := rows[k]
 		status := "converged"
@@ -99,7 +131,7 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 		if f == "" {
 			f = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d/%d\t%s\t%s\n", k[0], k[1], r.rev, r.happy, r.total, status, f)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d/%d\t%s\t%s\t%s\t%s\n", k[0], k[1], r.rev, r.happy, r.total, status, cmp.Or(r.version, "-"), cmp.Or(r.format, "-"), f)
 	}
 	return w.Flush()
 }
