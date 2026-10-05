@@ -52,7 +52,7 @@ func stackLabels(ctx context.Context, c client.APIClient, project string) ([]map
 	}
 	var out []map[string]string
 	for _, ct := range res.Items {
-		if r := ct.Labels[transform.LabelRole]; r == transform.RoleReplica || r == transform.RoleLock {
+		if transform.IsReplica(ct.Labels) || ct.Labels[transform.LabelRole] == transform.RoleLock {
 			out = append(out, ct.Labels)
 		}
 	}

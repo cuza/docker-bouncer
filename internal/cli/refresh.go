@@ -127,6 +127,9 @@ func bouncerProjects(ctx context.Context, c client.APIClient) (map[string]hostPr
 	}
 	out := map[string]hostProject{}
 	for _, ct := range res.Items {
+		if !transform.IsReplica(ct.Labels) {
+			continue
+		}
 		name := ct.Labels[api.ProjectLabel]
 		hp, seen := out[name]
 		up, best := ct.Labels[revision.LabelUpID], hp.labels[revision.LabelUpID] // UTC timestamps

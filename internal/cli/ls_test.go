@@ -11,7 +11,8 @@ import (
 )
 
 // A row per Service with its project's files, so a cron job can run up on
-// each; stopped ones say so and can be skipped.
+// each; stopped ones say so and can be skipped. Only containers Compose
+// created as a Service's replicas count.
 func TestLsTable(t *testing.T) {
 	c := func(project, role, svc, state, hash string) container.Summary {
 		l := map[string]string{api.ProjectLabel: project, api.ConfigFilesLabel: "/srv/" + project + "/compose.yaml",
@@ -19,16 +20,23 @@ func TestLsTable(t *testing.T) {
 		if project == "web" {
 			l[transform.LabelVersion], l[transform.LabelFormat] = "v1.2.0", "1.0"
 		}
+		if role == transform.RoleReplica {
+			l[api.ServiceLabel] = transform.AppName(svc)
+		}
 		if role == transform.RoleLock {
 			l = map[string]string{api.ProjectLabel: project, transform.LabelRole: role} // not created by Compose
 		}
 		return container.Summary{Labels: l, State: container.ContainerState(state), Status: "Up 2 hours"}
 	}
+	// Bouncer's labels on another service's container: not a replica.
+	impostor := c("web", transform.RoleReplica, "api", "exited", "h9")
+	impostor.Labels[api.ServiceLabel] = "worker"
 	var b strings.Builder
 	if err := lsTable(&b, []container.Summary{
 		c("web", transform.RoleProxy, "api", "running", ""),
 		c("web", transform.RoleReplica, "api", "running", "h1"),
 		c("web", transform.RoleReplica, "api", "running", "h1"),
+		impostor,
 		c("off", transform.RoleReplica, "api", "exited", "h1"),
 		c("new", transform.RoleReplica, "api", "running", "h1"),
 		c("new", transform.RoleReplica, "api", "running", "h2"),
@@ -58,7 +66,8 @@ func TestLsTable(t *testing.T) {
 
 func TestLsHints(t *testing.T) {
 	c := func(project, format string) container.Summary {
-		l := map[string]string{api.ProjectLabel: project, transform.LabelRole: transform.RoleReplica}
+		l := map[string]string{api.ProjectLabel: project, transform.LabelRole: transform.RoleReplica,
+			transform.LabelService: "api", api.ServiceLabel: "api-app"}
 		if format != "" {
 			l[transform.LabelFormat] = format
 		}

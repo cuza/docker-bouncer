@@ -309,7 +309,7 @@ func TestRefreshInvocationOfAnotherProject(t *testing.T) {
 	zw.Write(j)
 	zw.Close()
 	docker(t, "run", "-d", "--label", "com.docker.compose.project="+p.name, "--label", "dev.cuza.bouncer.role=replica",
-		"--label", "dev.cuza.bouncer.service=api", "--label", "dev.cuza.bouncer.up-id=20260101T000000Z",
+		"--label", "dev.cuza.bouncer.service=api", "--label", "com.docker.compose.service=api-app", "--label", "dev.cuza.bouncer.up-id=20260101T000000Z",
 		"--label", "dev.cuza.bouncer.invocation="+base64.StdEncoding.EncodeToString(buf.Bytes()), "bouncer-e2e-app:v1")
 	out, code := p.refresh("", "--pull", "never")
 	if code != 1 || !strings.Contains(out, "the recorded invocation loads project "+other.name+", not "+p.name) || strings.Contains(out, "Lock") {

@@ -47,6 +47,12 @@ type Result struct {
 
 func AppName(service string) string { return service + "-app" }
 
+// IsReplica: labels are a Service's replica, created by Compose as S-app.
+// Bouncer's labels alone are not enough: a plain service may carry them.
+func IsReplica(labels map[string]string) bool {
+	return labels[LabelRole] == RoleReplica && labels["com.docker.compose.service"] == AppName(labels[LabelService])
+}
+
 // MaxDNSName is the longest DNS label; Envoy finds replicas by container name.
 const MaxDNSName = 63
 

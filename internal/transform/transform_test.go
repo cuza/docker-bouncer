@@ -271,3 +271,15 @@ func TestBuildImageName(t *testing.T) {
 		t.Fatal("the proxy is never built")
 	}
 }
+
+// A replica carries Bouncer's role and Compose's service label for S-app.
+func TestIsReplica(t *testing.T) {
+	r := map[string]string{LabelRole: RoleReplica, LabelService: "api", "com.docker.compose.service": "api-app"}
+	if !IsReplica(r) {
+		t.Fatal("a replica")
+	}
+	r["com.docker.compose.service"] = "worker"
+	if IsReplica(r) {
+		t.Fatal("another service's container with Bouncer's labels is no replica")
+	}
+}

@@ -50,7 +50,7 @@ func lsCmd(dockerCli command.Cli) *cobra.Command {
 func lsHints(cs []container.Summary) []string {
 	stacks := map[string][]map[string]string{}
 	for _, c := range cs {
-		if r := c.Labels[transform.LabelRole]; r == transform.RoleReplica || r == transform.RoleLock {
+		if transform.IsReplica(c.Labels) || c.Labels[transform.LabelRole] == transform.RoleLock {
 			p := c.Labels[api.ProjectLabel]
 			stacks[p] = append(stacks[p], c.Labels)
 		}
@@ -87,6 +87,9 @@ func lsTable(out io.Writer, cs []container.Summary) error {
 			locked[project] = true
 			continue
 		case transform.RoleReplica:
+			if !transform.IsReplica(c.Labels) {
+				continue
+			}
 		default:
 			continue
 		}
