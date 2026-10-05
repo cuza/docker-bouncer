@@ -162,6 +162,15 @@ func (c composeScaler) ScaleUp(ctx context.Context, app types.ServiceConfig, tot
 	return err
 }
 
+// same: the replica with labels r is one of app's, by the bounce's key
+// (bounce.Runner.Key): the spec hash, or with migrate the spec and format.
+func (c composeScaler) same(r, app map[string]string) bool {
+	if c.l.key != nil {
+		return c.l.key(r) == c.l.key(app)
+	}
+	return r[revision.LabelSpecHash] == app[revision.LabelSpecHash]
+}
+
 // compose makes one Compose call; a hook runs between calls, so other
 // Services' bounces are not held up by it.
 func (c composeScaler) compose(call func() error) error {
@@ -184,7 +193,7 @@ func (c composeScaler) runsPreStart(ctx context.Context, app types.ServiceConfig
 	}
 	running := false
 	for _, r := range reps {
-		if r.Labels[revision.LabelSpecHash] == app.Labels[revision.LabelSpecHash] {
+		if c.same(r.Labels, app.Labels) {
 			return false, nil // this revision's hooks already ran
 		}
 		running = running || r.Running
@@ -206,7 +215,7 @@ func (c composeScaler) preStart(ctx context.Context, p *types.Project, app types
 	var target *engine.Replica
 	num := func(r *engine.Replica) int { n, _ := strconv.Atoi(r.Labels[api.ContainerNumberLabel]); return n }
 	for i, r := range reps {
-		if r.Labels[revision.LabelSpecHash] == app.Labels[revision.LabelSpecHash] && !r.Running &&
+		if c.same(r.Labels, app.Labels) && !r.Running &&
 			(target == nil || num(&reps[i]) < num(target)) {
 			target = &reps[i]
 		}
@@ -297,7 +306,7 @@ func (c composeScaler) runHook(ctx context.Context, p *types.Project, app types.
 func (c composeScaler) removeCreated(ctx context.Context, app types.ServiceConfig) {
 	reps, _ := c.l.Engine.Replicas(context.WithoutCancel(ctx), c.l.Derived.Project.Name, original(c.l, app.Name))
 	for _, r := range reps {
-		if r.Labels[revision.LabelSpecHash] == app.Labels[revision.LabelSpecHash] && !r.Running {
+		if c.same(r.Labels, app.Labels) && !r.Running {
 			c.l.Engine.Remove(context.WithoutCancel(ctx), r.ID)
 		}
 	}

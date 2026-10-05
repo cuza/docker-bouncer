@@ -210,7 +210,7 @@ func migratedApp(l *loaded, svc config.Service, cur map[string]string) (types.Se
 	if err != nil {
 		return app, err
 	}
-	app.Image = runImage(app)
+	runExact(&app, app)
 	labels, err := revision.Relabel(cur, h)
 	if err != nil {
 		return app, err

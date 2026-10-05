@@ -398,3 +398,28 @@ func TestStartStoppedRemovesNeverStarted(t *testing.T) {
 		t.Fatalf("removed %v, want the never-started replica", fe.removed)
 	}
 }
+
+// A bounce whose replicas differ by more than the spec hash (migrate keys
+// them by spec and format) runs the pre_start hooks for its new replicas
+// too, as for a new revision.
+func TestPreStartFollowsTheBounceKey(t *testing.T) {
+	api := service("api", "registry/api:1", "", true)
+	api.PreStart = []types.PreStartHook{{}}
+	l := derive(t, api)
+	l.Engine = &fakeEngine{reps: []engine.Replica{{ID: "old", Running: true,
+		Labels: map[string]string{revision.LabelSpecHash: "h", transform.LabelFormat: "1.0"}}}}
+	app := l.Derived.Project.Services["api-app"]
+	app.Labels = types.Labels{revision.LabelSpecHash: "h", transform.LabelFormat: "1.1"}
+	for _, tc := range []struct {
+		key  func(map[string]string) string
+		want bool
+	}{
+		{nil, false}, // same revision: its hooks ran
+		{func(l map[string]string) string { return l[revision.LabelSpecHash] + " " + l[transform.LabelFormat] }, true},
+	} {
+		l.key = tc.key
+		if got, err := (composeScaler{l: l}).runsPreStart(context.Background(), app); err != nil || got != tc.want {
+			t.Fatalf("key set %v: runs hooks %v (%v), want %v", tc.key != nil, got, err, tc.want)
+		}
+	}
+}

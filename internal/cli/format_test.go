@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/cuza/docker-bouncer/internal/format"
 	"github.com/cuza/docker-bouncer/internal/revision"
 
@@ -185,5 +186,28 @@ func TestMigratedAppRejectsBadInvocation(t *testing.T) {
 	labels[transform.LabelInvocation] = "not base64!"
 	if _, err := migratedApp(l, l.Derived.Services[0], labels); err == nil || !strings.Contains(err.Error(), "invocation label") {
 		t.Fatalf("%v, want an invocation error", err)
+	}
+}
+
+// A migrated revision runs its exact image, and so do the pre_start hooks
+// that inherited the service's image, as on undo.
+func TestMigratedAppPinsHookImages(t *testing.T) {
+	svc := service("api", "registry/app:1", "", true)
+	inherited, own := types.PreStartHook{}, types.PreStartHook{}
+	inherited.Image, own.Image = "registry/app:1", "registry/tool:1"
+	svc.PreStart = []types.PreStartHook{inherited, own}
+	l := derive(t, svc)
+	app := l.Derived.Project.Services["api-app"]
+	app.Labels = types.Labels{labelImage: "sha256:pinned"}
+	cur, _, err := revision.Stamp(app, nil, "u1", 10, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := migratedApp(l, l.Derived.Services[0], cur.Labels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Image != "sha256:pinned" || got.PreStart[0].Image != "sha256:pinned" || got.PreStart[1].Image != "registry/tool:1" {
+		t.Fatalf("image %q, hooks %q %q", got.Image, got.PreStart[0].Image, got.PreStart[1].Image)
 	}
 }
