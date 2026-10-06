@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/cuza/docker-bouncer/internal/bounce"
 	"github.com/cuza/docker-bouncer/internal/config"
 	"github.com/cuza/docker-bouncer/internal/engine"
 	"github.com/cuza/docker-bouncer/internal/revision"
@@ -31,6 +32,8 @@ type loaded struct {
 	inv     invocation                     // how this run loaded the project
 	key     func(map[string]string) string // bounce.Runner.Key
 	recheck func(context.Context) error    // run by withLock once the lock is held
+
+	failureLogs bounce.FailureLogs // where up saves the logs of a replica it removes as unhealthy
 }
 
 func load(ctx context.Context, dockerCli command.Cli, pf *ProjectFlags) (*loaded, error) {

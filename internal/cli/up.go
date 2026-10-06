@@ -28,7 +28,8 @@ import (
 )
 
 func upCmd(dockerCli command.Cli, pf *ProjectFlags) *cobra.Command {
-	var pull string
+	var pull, failureLogs string
+	var failureLogLines int
 	var forceUnlock, noBuild bool
 	cmd := &cobra.Command{
 		Use:   "up [SERVICE...]",
@@ -51,6 +52,10 @@ unchanged one is a cached no-op. --no-build skips building.`,
 			if err := checkFormat(ctx, dockerCli, l, true, pf.IgnoreFormat); err != nil {
 				return err
 			}
+			if failureLogLines < 1 {
+				return Exit(2, fmt.Errorf("--failure-log-lines: %d is not at least 1", failureLogLines))
+			}
+			l.failureLogs = bounce.FailureLogs{Dir: failureLogs, Lines: failureLogLines}
 			defer l.show(ctx, "up")()
 			switch pull {
 			case "", types.PullPolicyAlways, types.PullPolicyMissing, types.PullPolicyNever:
@@ -87,6 +92,8 @@ unchanged one is a cached no-op. --no-build skips building.`,
 	cmd.Flags().StringVar(&pull, "pull", "", `Pull policy override: "always", "missing", "never"`)
 	cmd.Flags().BoolVar(&noBuild, "no-build", false, "Don't build images; services with build: need theirs already")
 	cmd.Flags().Bool("build", true, "Compatibility only: up always builds services with build:")
+	cmd.Flags().StringVar(&failureLogs, "failure-logs", "", "Directory where a new replica removed for never turning healthy leaves its last log lines, as <replica>-<UTC time>.log")
+	cmd.Flags().IntVar(&failureLogLines, "failure-log-lines", bounce.DefaultFailureLogLines, "Trailing log lines --failure-logs keeps")
 	cmd.Flags().BoolVar(&forceUnlock, "force-unlock", false, "Take over a lock left by another run")
 	cmd.Flags().BoolP("detach", "d", true, "Compatibility only: up always runs detached")
 	cmd.Flags().Bool("wait", true, "Compatibility only: up always waits for every Service to converge")
@@ -314,7 +321,7 @@ func upService(ctx context.Context, l *loaded, svc config.Service, app types.Ser
 	return (&bounce.Runner{
 		Project: l.Derived.Project.Name, Svc: svc, App: app, N: app.GetScale(),
 		Engine: l.Engine, Proxy: px,
-		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now, Key: l.key,
+		Scaler: composeScaler{l}, Events: l.Events, Now: time.Now, Key: l.key, FailureLogs: l.failureLogs,
 	}).Run(ctx)
 }
 

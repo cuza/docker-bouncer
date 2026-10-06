@@ -39,6 +39,9 @@ type Runner struct {
 	// Key is what makes a replica current, from its labels; nil is the
 	// spec hash. migrate adds the format, to replace same-spec replicas.
 	Key func(labels map[string]string) string
+	// FailureLogs saves a replica's last log lines before it is removed for
+	// never turning healthy; the zero value saves nothing.
+	FailureLogs FailureLogs
 
 	runStart     time.Time
 	healthySince map[string]time.Time
@@ -348,6 +351,7 @@ func (r *Runner) removeUnhealthyNew(ctx context.Context, st State) error {
 		}
 	}
 	for _, o := range bad {
+		r.saveFailureLogs(ctx, o)
 		o.Listed = false // already out of the list
 		if err := r.remove(ctx, st, o, "unhealthy"); err != nil {
 			return err

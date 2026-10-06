@@ -72,6 +72,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+	log.Printf("app starting version=%s unhealthy=%s", os.Getenv("VERSION"), os.Getenv("UNHEALTHY"))
 	go func() {
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatal(err)

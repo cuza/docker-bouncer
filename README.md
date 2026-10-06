@@ -98,7 +98,7 @@ project whose storage format is newer than this CLI can safely change.
 
 | Command | Does |
 |---|---|
-| `up [SERVICE…] [--pull …] [--no-build] [--force-unlock] [-d] [--wait]` | Pull, build every `build:` service, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait`, `--build` accepted for compatibility) |
+| `up [SERVICE…] [--pull …] [--no-build] [--force-unlock] [--failure-logs DIR [--failure-log-lines N]] [-d] [--wait]` | Pull, build every `build:` service, converge plain services, bounce changed Services; always detached and waits for convergence (`-d`, `--wait`, `--build` accepted for compatibility) |
 | `undo [SERVICE] [--to-revision N]` | Bounce back to a stored revision, and its exact image |
 | `refresh [PROJECT…] [-a] [--dry-run] [--pull never]` | For every project with Services on this host (or the named ones): pull tags that moved and bounce, loading each project as its last `up` did; `-a` also recreates plain services whose image changed |
 | `migrate [PROJECT…] [--dry-run]` | Bring projects stored in an older format to this CLI's: one bounce from the current revision, its exact image |
@@ -111,6 +111,25 @@ project whose storage format is newer than this CLI can safely change.
 | `stop [SERVICE…] [-t N]` | Stop containers; no drain |
 | `down` | Remove the project and its revision history, including the proxies and replicas of Services in inactive profiles (plain services in inactive profiles keep running, as with `docker compose down`) |
 | `version [--short]` (or `--version`) | Show the version, plus the Compose library and default Envoy image it is built on |
+
+### Keeping the logs of a replica that never turns healthy
+
+A failed bounce removes the new replica, and its logs go with it: the failure
+line says that it did not turn healthy, not why. With `--failure-logs DIR`,
+`up` first saves the last `--failure-log-lines` lines (default 200; stdout and
+stderr, as `docker logs --tail` returns them) of every new replica it removes
+for that reason, to `DIR/<replica>-<UTC time>.log`, and reports the path on the
+replica's row (`Logs saved`). `DIR` is created if missing and the files are
+written whole, so a reader never sees a partial one.
+
+```sh
+docker bouncer up --failure-logs /var/log/bouncer-failures api
+```
+
+Saving is best effort: if the logs cannot be read or written, the row says
+`Logs not saved` and the bounce fails exactly as it would have. Nothing is
+saved for a bounce that succeeds, and without the flag nothing changes. What
+happens to the files (print, ship, rotate) is up to the caller.
 
 ### Replacing Watchtower
 

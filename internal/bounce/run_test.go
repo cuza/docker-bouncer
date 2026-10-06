@@ -3,6 +3,9 @@ package bounce
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +143,92 @@ func TestRunFailRemovesEveryUnhealthyNewReplica(t *testing.T) {
 	}
 	if len(w.reps) != 1 || w.reps[0].Name != "proj-api-app-1" || !w.listed("proj-api-app-1") {
 		t.Fatalf("only the healthy new replica stays, listed: %v %v", w.reps, w.list)
+	}
+}
+
+// The last lines of a replica that never turns healthy are saved before it is
+// removed, one file each, and the healthy one leaves none.
+func TestRunFailSavesLogsOfEveryUnhealthyNewReplicaBeforeRemovingIt(t *testing.T) {
+	w := newWorld("new", 3) // app-1 healthy; app-2 and app-3 never healthy
+	w.never = map[string]bool{"proj-api-app-2": true, "proj-api-app-3": true}
+	w.reps[2].Created = t0.Add(time.Hour)
+	w.logs = map[string]string{"proj-api-app-2": "boot\nmissing setting X", "proj-api-app-3": "boot\ncrash\n"}
+	dir := filepath.Join(t.TempDir(), "failures")
+	r := w.runner(config.MethodCrossover, 3, "new")
+	r.FailureLogs = FailureLogs{Dir: dir, Lines: 5}
+	if err := r.Run(context.Background()); !errors.Is(err, ErrFailed) {
+		t.Fatalf("got %v", err)
+	}
+	stamp := w.now.UTC().Format("20060102T150405Z")
+	for name, want := range map[string]string{"proj-api-app-2": "boot\nmissing setting X\n", "proj-api-app-3": "boot\ncrash\n"} {
+		got, err := os.ReadFile(filepath.Join(dir, name+"-"+stamp+".log"))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s: %q %v", name, got, err)
+		}
+		saved, removed := slices.Index(w.events, "logs:"+name+":5"), slices.Index(w.events, "rm:"+name)
+		if saved < 0 || removed < 0 || saved > removed {
+			t.Fatalf("%s: logs must be read before it is removed: %v", name, w.events)
+		}
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*"))
+	if len(files) != 2 {
+		t.Fatalf("only the unhealthy replicas leave a file, got %v", files)
+	}
+}
+
+func TestRunFailKeepsDefaultLineCountAndSavesNothingWithoutADir(t *testing.T) {
+	w := newWorld("new", 2)
+	w.never = map[string]bool{"proj-api-app-2": true}
+	r := w.runner(config.MethodCrossover, 2, "new")
+	if err := r.Run(context.Background()); !errors.Is(err, ErrFailed) {
+		t.Fatalf("got %v", err)
+	}
+	if slices.ContainsFunc(w.events, func(e string) bool { return strings.HasPrefix(e, "logs:") }) {
+		t.Fatalf("no dir, no log read: %v", w.events)
+	}
+
+	w = newWorld("new", 2)
+	w.never = map[string]bool{"proj-api-app-2": true}
+	r = w.runner(config.MethodCrossover, 2, "new")
+	r.FailureLogs = FailureLogs{Dir: t.TempDir()}
+	if err := r.Run(context.Background()); !errors.Is(err, ErrFailed) {
+		t.Fatalf("got %v", err)
+	}
+	if !slices.Contains(w.events, "logs:proj-api-app-2:200") {
+		t.Fatalf("default is %d lines: %v", DefaultFailureLogLines, w.events)
+	}
+}
+
+// Saving is best effort: whatever goes wrong, the bounce fails as it would have
+// and the replica is removed all the same.
+func TestRunFailSavingLogsNeverChangesTheOutcome(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, fl := range map[string]struct {
+		dir     string
+		logsErr error
+	}{
+		"logs cannot be read":   {dir: t.TempDir(), logsErr: errors.New("no such container")},
+		"dir cannot be created": {dir: filepath.Join(file, "sub")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld("new", 2)
+			w.never = map[string]bool{"proj-api-app-2": true}
+			w.logsErr = fl.logsErr
+			r := w.runner(config.MethodCrossover, 2, "new")
+			r.FailureLogs = FailureLogs{Dir: fl.dir}
+			if err := r.Run(context.Background()); !errors.Is(err, ErrFailed) {
+				t.Fatalf("got %v", err)
+			}
+			if len(w.reps) != 1 || w.reps[0].Name != "proj-api-app-1" {
+				t.Fatalf("the unhealthy replica is removed anyway: %v", w.reps)
+			}
+			if left, _ := filepath.Glob(filepath.Join(fl.dir, "*")); len(left) != 0 {
+				t.Fatalf("nothing is left behind: %v", left)
+			}
+		})
 	}
 }
 

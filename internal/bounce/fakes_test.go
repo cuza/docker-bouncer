@@ -35,6 +35,8 @@ type world struct {
 	next       int
 	cds        string // the proxy's cluster file
 	svc        config.Service
+	logs       map[string]string // what Logs returns, by replica ID
+	logsErr    error
 }
 
 // newWorld: n running replicas with hash h, all listed (as after a previous up).
@@ -96,9 +98,12 @@ func (w *world) Replicas(context.Context, string, string) ([]engine.Replica, err
 func (w *world) Container(context.Context, string, map[string]string) (*engine.Replica, error) {
 	return nil, nil
 }
-func (w *world) Start(context.Context, string) error               { return nil }
-func (w *world) RemoveKeepVolumes(context.Context, string) error   { return nil }
-func (w *world) Logs(context.Context, string, int) (string, error) { return "", nil }
+func (w *world) Start(context.Context, string) error             { return nil }
+func (w *world) RemoveKeepVolumes(context.Context, string) error { return nil }
+func (w *world) Logs(_ context.Context, id string, tail int) (string, error) {
+	w.events = append(w.events, fmt.Sprintf("logs:%s:%d", id, tail))
+	return w.logs[id], w.logsErr
+}
 
 func (w *world) Stop(_ context.Context, id string) error {
 	w.events = append(w.events, "stop:"+id)

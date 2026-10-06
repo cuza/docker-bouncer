@@ -178,6 +178,44 @@ func TestNeverHealthyFailsAndOldServes(t *testing.T) {
 	}
 }
 
+func TestFailureLogsSavedForAReplicaThatNeverTurnsHealthy(t *testing.T) {
+	port := freePort(t)
+	p := project(t, api(port, 1, `min_task_uptime: 1s, bounce_health_timeout: 15s, healthcheck: { uri: /health }`))
+	p.mustUp()
+	p.write(strings.Replace(p.yaml, "image: bouncer-e2e-app:v1", "image: bouncer-e2e-app:v2\n    environment: { UNHEALTHY: \"1\" }", 1))
+
+	dir := filepath.Join(t.TempDir(), "failures")
+	out, code := p.bouncer("up", "--failure-logs", dir, "--failure-log-lines", "50")
+	if code != 1 {
+		t.Fatalf("bounce of a never-healthy version: exit %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "Logs saved") || !strings.Contains(out, dir) {
+		t.Fatalf("the saved file must be reported:\n%s", out)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.log"))
+	if len(files) != 1 {
+		t.Fatalf("one failed replica, one file: %v\n%s", files, out)
+	}
+	got, err := os.ReadFile(files[0])
+	if err != nil || !strings.Contains(string(got), "app starting version=") || !strings.Contains(string(got), "unhealthy=1") {
+		t.Fatalf("the file must hold what the replica printed: %q %v", got, err)
+	}
+	if info, _ := os.Stat(files[0]); info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode %v, want 0640", info.Mode().Perm())
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(left) != 0 {
+		t.Fatalf("no temporary file may remain: %v", left)
+	}
+	if img := p.images("api"); img["bouncer-e2e-app:v1"] != 1 || len(img) != 1 {
+		t.Fatalf("replica images after the failed bounce %v (no v2 may remain)", img)
+	}
+
+	// Without the flag nothing is saved or reported.
+	if out, code = p.bouncer("up"); code != 1 || strings.Contains(out, "Logs saved") {
+		t.Fatalf("without --failure-logs nothing is saved: exit %d\n%s", code, out)
+	}
+}
+
 func TestUpTwiceIsNoop(t *testing.T) {
 	port := freePort(t)
 	p := project(t, api(port, 2, fast)+`
